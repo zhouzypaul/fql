@@ -5,7 +5,7 @@
     <summary>
       <h1>Flow Q-Learning</h1>
       <br>
-      <h2><a href="">Paper</a> &emsp; <a href="https://seohong.me/projects/fql/">Project page</a></h2>
+      <h2><a href="https://arxiv.org/abs/2502.02538">Paper</a> &emsp; <a href="https://seohong.me/projects/fql/">Project page</a></h2>
     </summary>
   </ul>
 </div>
