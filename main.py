@@ -167,7 +167,7 @@ def main(_):
                 replay_batch = replay_buffer.sample(config['batch_size'] // 2)
                 batch = {k: np.concatenate([dataset_batch[k], replay_batch[k]], axis=0) for k in dataset_batch}
             else:
-                batch = train_dataset.sample(config['batch_size'])
+                batch = replay_buffer.sample(config['batch_size'])
 
             if config['agent_name'] == 'rebrac':
                 agent, update_info = agent.update(batch, full_update=(i % config['actor_freq'] == 0))
