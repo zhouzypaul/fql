@@ -146,3 +146,25 @@ def make_env_and_datasets(env_name, frame_stack=None, action_clip_eps=1e-5):
             )
 
     return env, eval_env, train_dataset, val_dataset
+
+def make_gc_env_and_datasets(dataset_name, frame_stack=None):
+    """Make OGBench environment and datasets.
+
+    Args:
+        dataset_name: Name of the dataset.
+        frame_stack: Number of frames to stack.
+
+    Returns:
+        A tuple of the environment, training dataset, and validation dataset.
+    """
+    # Use compact dataset to save memory.
+    env, train_dataset, val_dataset = ogbench.make_env_and_datasets(dataset_name, compact_dataset=True)
+    train_dataset = Dataset.create(**train_dataset)
+    val_dataset = Dataset.create(**val_dataset)
+
+    if frame_stack is not None:
+        env = FrameStackWrapper(env, frame_stack)
+
+    env.reset()
+
+    return env, train_dataset, val_dataset

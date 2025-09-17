@@ -1,4 +1,5 @@
-from typing import Any, Optional, Sequence
+from typing import Callable, Any, Sequence, Optional, Dict
+from dataclasses import field
 
 import distrax
 import flax.linen as nn
@@ -232,3 +233,52 @@ class ActorVectorField(nn.Module):
         v = self.mlp(inputs)
 
         return v
+
+class GCActorVectorField(nn.Module):
+    """Actor vector field network for flow matching.
+
+    Attributes:
+        hidden_dims: Hidden layer dimensions.
+        action_dim: Action dimension.
+        layer_norm: Whether to apply layer normalization.
+        encoder: Optional encoder module to encode the inputs.
+    """
+
+    hidden_dims: Sequence[int]
+    action_dim: int
+    layer_norm: bool = False
+    encoder: nn.Module = None
+
+    def setup(self) -> None:
+        self.mlp = MLP((*self.hidden_dims, self.action_dim), activate_final=False, layer_norm=self.layer_norm)
+
+    @nn.compact
+    def __call__(self, observations, actions, times, goals=None, is_encoded=False):
+        """Return the vectors at the given states, actions, and times, and goals (optional).
+
+        Args:
+            observations: Observations.
+            actions: Actions.
+            times: Times.
+            goals: Goals (optional).
+            is_encoded: Whether the observations are already encoded.
+        """
+        if self.encoder is not None and not is_encoded:
+            observations = self.encoder(observations)
+        if goals is None:
+            inputs = jnp.concatenate([observations, actions, times], axis=-1)
+        else:
+            inputs = jnp.concatenate([observations, goals, actions, times], axis=-1)
+        v = self.mlp(inputs)
+        return v
+
+
+class UnconditionalEmbedding(nn.Module):
+    """Unconditional embedding module."""
+
+    goal_dim: int
+
+    @nn.compact
+    def __call__(self):
+        embed = nn.Embed(1, self.goal_dim)
+        return embed(jnp.zeros(1, dtype=jnp.uint8))
