@@ -22,6 +22,8 @@ from utils.log_utils import CsvLogger, get_exp_name, get_flag_dict, get_wandb_vi
 FLAGS = flags.FLAGS
 
 flags.DEFINE_string('run_group', 'Debug', 'Run group.')
+flags.DEFINE_string('wandb_project', 'fql', 'Wandb project name.')
+flags.DEFINE_boolean('wandb_offline', False, 'Whether to run wandb in offline mode.')
 flags.DEFINE_integer('seed', 0, 'Random seed.')
 flags.DEFINE_string('env_name', 'cube-double-play-singletask-v0', 'Environment (dataset) name.')
 flags.DEFINE_string('save_dir', 'exp/', 'Save directory.')
@@ -47,18 +49,29 @@ config_flags.DEFINE_config_file('agent', 'agents/fql.py', lock_config=False)
 
 
 def main(_):
-    # Set up logger.
-    exp_name = get_exp_name(FLAGS.seed)
-    setup_wandb(project='fql', group=FLAGS.run_group, name=exp_name)
+    # Make environment and datasets first to get config
+    config = FLAGS.agent
+    
+    # Create a more descriptive experiment name
+    agent_name = config['agent_name']
+    env_short = FLAGS.env_name.replace('-singletask', '').replace('-v0', '').replace('-v1', '').replace('-v2', '')
+    timestamp = time.strftime("%m%d_%H%M")
+    exp_name = f"{agent_name}_{env_short}_seed{FLAGS.seed:02d}_{timestamp}"
+    
+    # Set up wandb with both flags and agent config
+    setup_wandb(
+        project=FLAGS.wandb_project, 
+        group=FLAGS.run_group, 
+        name=exp_name,
+        hyperparam_dict=config.to_dict(),
+        mode='offline' if FLAGS.wandb_offline else 'online',
+    )
 
     FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, FLAGS.run_group, exp_name)
     os.makedirs(FLAGS.save_dir, exist_ok=True)
     flag_dict = get_flag_dict()
     with open(os.path.join(FLAGS.save_dir, 'flags.json'), 'w') as f:
         json.dump(flag_dict, f)
-
-    # Make environment and datasets.
-    config = FLAGS.agent
     env, eval_env, train_dataset, val_dataset = make_env_and_datasets(FLAGS.env_name, frame_stack=FLAGS.frame_stack)
     if FLAGS.video_episodes > 0:
         assert 'singletask' in FLAGS.env_name, 'Rendering is currently only supported for OGBench environments.'
@@ -118,6 +131,10 @@ def main(_):
         if i <= FLAGS.offline_steps:
             # Offline RL.
             batch = train_dataset.sample(config['batch_size'])
+
+            # Add observations_policy for diffusion agents
+            if config['agent_name'] == 'iql_diffusion':
+                batch['observations_policy'] = batch['observations']
 
             if config['agent_name'] == 'rebrac':
                 agent, update_info = agent.update(batch, full_update=(i % config['actor_freq'] == 0))
@@ -179,6 +196,9 @@ def main(_):
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
             if val_dataset is not None:
                 val_batch = val_dataset.sample(config['batch_size'])
+                # Add observations_policy for diffusion agents
+                if config['agent_name'] == 'iql_diffusion':
+                    val_batch['observations_policy'] = val_batch['observations']
                 _, val_info = agent.total_loss(val_batch, grad_params=None)
                 train_metrics.update({f'validation/{k}': v for k, v in val_info.items()})
             train_metrics['time/epoch_time'] = (time.time() - last_time) / FLAGS.log_interval
@@ -192,17 +212,46 @@ def main(_):
         if FLAGS.eval_interval != 0 and (i == 1 or i % FLAGS.eval_interval == 0):
             renders = []
             eval_metrics = {}
-            eval_info, trajs, cur_renders = evaluate(
-                agent=agent,
-                env=eval_env,
-                config=config,
-                num_eval_episodes=FLAGS.eval_episodes,
-                num_video_episodes=FLAGS.video_episodes,
-                video_frame_skip=FLAGS.video_frame_skip,
-            )
-            renders.extend(cur_renders)
-            for k, v in eval_info.items():
-                eval_metrics[f'evaluation/{k}'] = v
+            
+            # Special evaluation for diffusion agents with multiple cfg values
+            if config['agent_name'] == 'iql_diffusion':
+                max_return = -np.inf
+                for cfg in [1.0, 1.5, 3.0, 5.0, 10.0, 30.0, 100.0]:
+                    eval_info, trajs, cur_renders = evaluate(
+                        agent=agent,
+                        env=eval_env,
+                        config=config,
+                        num_eval_episodes=FLAGS.eval_episodes,
+                        num_video_episodes=FLAGS.video_episodes,
+                        video_frame_skip=FLAGS.video_frame_skip,
+                        cfg=cfg,
+                    )
+                    renders.extend(cur_renders)
+                    
+                    eval_name = f'evaluation_cfg{cfg}'
+                    for k in ['episode.return', 'episode.length', 'success']:
+                        eval_metrics[f'{eval_name}/{k}'] = eval_info[k]
+                    try:
+                        eval_metrics[f'{eval_name}/episode.return.normalized'] = eval_env.get_normalized_score(eval_info['episode.return'])
+                    except:
+                        pass
+                    
+                    max_return = max(max_return, eval_info['episode.return'])
+                
+                eval_metrics['evaluation/episode.return'] = max_return
+            else:
+                # Standard evaluation for other agents
+                eval_info, trajs, cur_renders = evaluate(
+                    agent=agent,
+                    env=eval_env,
+                    config=config,
+                    num_eval_episodes=FLAGS.eval_episodes,
+                    num_video_episodes=FLAGS.video_episodes,
+                    video_frame_skip=FLAGS.video_frame_skip,
+                )
+                renders.extend(cur_renders)
+                for k, v in eval_info.items():
+                    eval_metrics[f'evaluation/{k}'] = v
 
             if FLAGS.video_episodes > 0:
                 video = get_wandb_video(renders=renders)
