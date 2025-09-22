@@ -6,6 +6,8 @@ import absl.flags as flags
 import ml_collections
 import numpy as np
 import wandb
+import pathlib
+import subprocess
 from PIL import Image, ImageEnhance
 
 
@@ -66,10 +68,13 @@ def setup_wandb(
     name=None,
     mode='online',
     hyperparam_dict=None,
+    log_code=True,
+    tags=None,
 ):
     """Set up Weights & Biases for logging."""
     wandb_output_dir = tempfile.mkdtemp()
-    tags = [group] if group is not None else None
+    if tags is None:
+        tags = [group] if group is not None else None
 
     # Combine flag dict with hyperparameters (similar to utils/wandb.py)
     config_dict = get_flag_dict()
@@ -93,6 +98,19 @@ def setup_wandb(
     )
 
     run = wandb.init(**init_kwargs)
+    
+    if log_code:
+        run.log_code(
+            root=".",
+            include_fn=lambda p: not any(part in {".git", "__pycache__", ".venv", "exp/"} for part in pathlib.Path(p).parts)
+        )
+        
+        try:
+            sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+            diff = subprocess.check_output(["git", "diff"], text=True)
+        except Exception:
+            sha, diff = "no-git", ""
+        wandb.config.update({"git_commit": sha, "git_diff": diff}, allow_val_change=True)
 
     return run
 

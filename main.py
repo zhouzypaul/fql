@@ -7,6 +7,9 @@ import time
 
 import jax
 import numpy as np
+import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+import plotly.express as px
 import tqdm
 import wandb
 from absl import app, flags
@@ -21,9 +24,12 @@ from utils.log_utils import CsvLogger, get_exp_name, get_flag_dict, get_wandb_vi
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_string('run_group', 'Debug', 'Run group.')
+flags.DEFINE_boolean('debug', False, 'Whether to run in debug mode.')
+flags.DEFINE_string('wandb_run_group', 'Debug', 'Run group.')
 flags.DEFINE_string('wandb_project', 'fql', 'Wandb project name.')
 flags.DEFINE_boolean('wandb_offline', False, 'Whether to run wandb in offline mode.')
+flags.DEFINE_boolean('wandb_log_code', False, 'Whether to log code to wandb.')
+flags.DEFINE_multi_string('wandb_tags', None, 'Wandb tags.')
 flags.DEFINE_integer('seed', 0, 'Random seed.')
 flags.DEFINE_string('env_name', 'cube-double-play-singletask-v0', 'Environment (dataset) name.')
 flags.DEFINE_string('save_dir', 'exp/', 'Save directory.')
@@ -45,6 +51,7 @@ flags.DEFINE_float('p_aug', None, 'Probability of applying image augmentation.')
 flags.DEFINE_integer('frame_stack', None, 'Number of frames to stack.')
 flags.DEFINE_integer('balanced_sampling', 0, 'Whether to use balanced sampling for online fine-tuning.')
 
+flags.DEFINE_string('optimal_var', 'binary', 'Optimal variable.')
 config_flags.DEFINE_config_file('agent', 'agents/fql.py', lock_config=False)
 
 
@@ -52,26 +59,14 @@ def main(_):
     # Make environment and datasets first to get config
     config = FLAGS.agent
     
+    config['optimal_var'] = FLAGS.optimal_var
     # Create a more descriptive experiment name
     agent_name = config['agent_name']
     env_short = FLAGS.env_name.replace('-singletask', '').replace('-v0', '').replace('-v1', '').replace('-v2', '')
     timestamp = time.strftime("%m%d_%H%M")
-    exp_name = f"{agent_name}_{env_short}_seed{FLAGS.seed:02d}_{timestamp}"
+    exp_name = f"{FLAGS.wandb_run_group}_{agent_name}_{env_short}_seed{FLAGS.seed:02d}_{timestamp}"
     
-    # Set up wandb with both flags and agent config
-    setup_wandb(
-        project=FLAGS.wandb_project, 
-        group=FLAGS.run_group, 
-        name=exp_name,
-        hyperparam_dict=config.to_dict(),
-        mode='offline' if FLAGS.wandb_offline else 'online',
-    )
 
-    FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, FLAGS.run_group, exp_name)
-    os.makedirs(FLAGS.save_dir, exist_ok=True)
-    flag_dict = get_flag_dict()
-    with open(os.path.join(FLAGS.save_dir, 'flags.json'), 'w') as f:
-        json.dump(flag_dict, f)
     env, eval_env, train_dataset, val_dataset = make_env_and_datasets(FLAGS.env_name, frame_stack=FLAGS.frame_stack)
     if FLAGS.video_episodes > 0:
         assert 'singletask' in FLAGS.env_name, 'Rendering is currently only supported for OGBench environments.'
@@ -116,6 +111,23 @@ def main(_):
     # Restore agent.
     if FLAGS.restore_path is not None:
         agent = restore_agent(agent, FLAGS.restore_path, FLAGS.restore_epoch)
+        
+    # Set up wandb with both flags and agent config
+    setup_wandb(
+        project=FLAGS.wandb_project, 
+        group=FLAGS.wandb_run_group, 
+        tags=FLAGS.wandb_tags,
+        name=exp_name,
+        hyperparam_dict=config.to_dict(),
+        mode='disabled' if FLAGS.debug else ('offline' if FLAGS.wandb_offline else 'online'),
+        log_code=FLAGS.wandb_log_code,
+    )
+
+    FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, FLAGS.wandb_run_group, exp_name)
+    os.makedirs(FLAGS.save_dir, exist_ok=True)
+    flag_dict = get_flag_dict()
+    with open(os.path.join(FLAGS.save_dir, 'flags.json'), 'w') as f:
+        json.dump(flag_dict, f)
 
     # Train agent.
     train_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'train.csv'))
@@ -138,6 +150,8 @@ def main(_):
 
             if config['agent_name'] == 'rebrac':
                 agent, update_info = agent.update(batch, full_update=(i % config['actor_freq'] == 0))
+            elif config['agent_name'] == 'iql_diffusion':
+                agent, update_info = agent.update(batch, update_critic=i in range(*config['critic_steps']), update_actor=i in range(*config['actor_steps']))
             else:
                 agent, update_info = agent.update(batch)
         else:
@@ -209,36 +223,110 @@ def main(_):
             train_logger.log(train_metrics, step=i)
 
         # Evaluate agent.
-        if FLAGS.eval_interval != 0 and (i == 1 or i % FLAGS.eval_interval == 0):
+        if FLAGS.eval_interval != 0 and (i == 1 or i % FLAGS.eval_interval == 0) and i >= config['actor_steps'][0]:
             renders = []
             eval_metrics = {}
             
             # Special evaluation for diffusion agents with multiple cfg values
             if config['agent_name'] == 'iql_diffusion':
                 max_return = -np.inf
-                for cfg in [1.0, 1.5, 3.0, 5.0, 10.0, 30.0, 100.0]:
-                    eval_info, trajs, cur_renders = evaluate(
-                        agent=agent,
-                        env=eval_env,
-                        config=config,
-                        num_eval_episodes=FLAGS.eval_episodes,
-                        num_video_episodes=FLAGS.video_episodes,
-                        video_frame_skip=FLAGS.video_frame_skip,
-                        cfg=cfg,
-                    )
-                    renders.extend(cur_renders)
-                    
-                    eval_name = f'evaluation_cfg{cfg}'
-                    for k in ['episode.return', 'episode.length', 'success']:
-                        eval_metrics[f'{eval_name}/{k}'] = eval_info[k]
-                    try:
-                        eval_metrics[f'{eval_name}/episode.return.normalized'] = eval_env.get_normalized_score(eval_info['episode.return'])
-                    except:
-                        pass
-                    
-                    max_return = max(max_return, eval_info['episode.return'])
+                cfg_values = [1.0, 1.5, 3.0, 5.0]
+                if config['optimal_var'] == 'softmax':
+                    optimality_values = [0.5, 0.55, 0.6, 0.65, 0.7, 0.8, 0.9, 1.0]
+                else:
+                    optimality_values = [1.0]
                 
+                # Store results for each cfg-optimality combination
+                cfg_optimality_results = {}
+                
+                for cfg in cfg_values:
+                    cfg_optimality_results[cfg] = {}
+                    for o in optimality_values:
+                        eval_info, trajs, cur_renders = evaluate(
+                            agent=agent,
+                            env=eval_env,
+                            config=config,
+                            num_eval_episodes=FLAGS.eval_episodes,
+                            num_video_episodes=FLAGS.video_episodes,
+                            video_frame_skip=FLAGS.video_frame_skip,
+                            cfg=cfg,
+                            o=o,
+                        )
+                        renders.extend(cur_renders)
+                        
+                        # Store results for this cfg-optimality combination
+                        cfg_optimality_results[cfg][o] = eval_info
+                        
+                        # Track max return across all combinations
+                        max_return = max(max_return, eval_info['episode.return'])
+                    
+                    if config['optimal_var'] == 'binary':
+                        eval_name = f'evaluation_cfg{cfg}'
+                        for k in ['episode.return', 'episode.length', 'success']:
+                            eval_metrics[f'{eval_name}/{k}'] = cfg_optimality_results[cfg][1.0][k]
+
+                # 1. Log overall best performance
                 eval_metrics['evaluation/episode.return'] = max_return
+                                
+                # 2. Find and log the best cfg-optimality combination
+                best_cfg = None
+                best_o = None
+                for cfg in cfg_values:
+                    for o in optimality_values:
+                        if cfg_optimality_results[cfg][o]['episode.return'] == max_return:
+                            best_cfg = cfg
+                            best_o = o
+                            break
+                    if best_cfg is not None:
+                        break
+                
+                eval_metrics['evaluation/best_cfg'] = best_cfg
+                eval_metrics['evaluation/best_optimality'] = best_o
+                
+                # 3. Log individual metrics for each cfg-optimality combination
+                # This allows wandb to aggregate (mean/std) across runs and create custom plots
+                if config['optimal_var'] != 'binary':
+                    for cfg in cfg_values:
+                        for o in optimality_values:
+                            result = cfg_optimality_results[cfg][o]
+                            prefix = f"evaluation_cfg{cfg}/o_{o}"
+                            
+                            # Log each metric separately so wandb can aggregate them
+                            eval_metrics[f'{prefix}/episode_return'] = result['episode.return']
+                            eval_metrics[f'{prefix}/success_rate'] = result['success']
+                            eval_metrics[f'{prefix}/episode_length'] = result['episode.length']
+                
+                # 4. Create heatmap data matrices for visualization
+                returns_matrix = np.array([[cfg_optimality_results[cfg][o]['episode.return'] 
+                                          for cfg in cfg_values] for o in optimality_values])
+                success_matrix = np.array([[cfg_optimality_results[cfg][o]['success'] 
+                                          for cfg in cfg_values] for o in optimality_values])
+                length_matrix = np.array([[cfg_optimality_results[cfg][o]['episode.length'] 
+                                         for cfg in cfg_values] for o in optimality_values])
+                
+                # 5. Create interactive heatmaps (optional - mainly for individual run inspection)
+                def create_heatmap(data, title, colorscale='Viridis'):
+                    return go.Figure(data=go.Heatmap(
+                        z=data,
+                        x=[f'CFG {cfg}' for cfg in cfg_values],
+                        y=[f'O={o}' for o in optimality_values],
+                        colorscale=colorscale,
+                        text=[[f'{val:.3f}' for val in row] for row in data],
+                        texttemplate="%{text}",
+                        textfont={"size": 10},
+                        hovertemplate='<b>CFG</b>: %{x}<br><b>Optimality</b>: %{y}<br><b>Value</b>: %{z:.4f}<extra></extra>'
+                    )).update_layout(
+                        title=f'{title} (Step {i})',
+                        xaxis_title='CFG Weight',
+                        yaxis_title='Optimality Variable',
+                        width=600, height=400, font=dict(size=12)
+                    )
+                
+                # Log heatmaps for individual run inspection
+                eval_metrics['heatmaps/returns'] = wandb.Plotly(create_heatmap(returns_matrix, 'Episode Returns', 'Viridis'))
+                eval_metrics['heatmaps/success'] = wandb.Plotly(create_heatmap(success_matrix, 'Success Rate', 'Blues'))
+                eval_metrics['heatmaps/length'] = wandb.Plotly(create_heatmap(length_matrix, 'Episode Length', 'Oranges'))
+                
             else:
                 # Standard evaluation for other agents
                 eval_info, trajs, cur_renders = evaluate(
