@@ -245,7 +245,7 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
         }
 
     @jax.jit
-    def sample_actions(agent, observations: np.ndarray, *, seed: Any, temperature: float = 1., cfg = 1., o = 1., w_prime = None) -> jnp.ndarray:
+    def sample_actions(agent, observations: np.ndarray, *, seed: Any, temperature: float = 1., cfg = 1., o = 1., w_prime = 0) -> jnp.ndarray:
         observations = observations[None]
 
         x = jax.random.normal(seed, (observations.shape[0], agent.config['action_dim']))
@@ -259,9 +259,9 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
             v_positive = agent.actor(observations, idx_positive, x, ti)
             v_uncond = agent.actor(observations, idx_uncond, x, ti)
             v = v_uncond + cfg * (v_positive - v_uncond)
-            if w_prime > 0:
-                advantage_grad = agent._compute_advantage_gradient(observations, x)
-                v = v + w_prime * advantage_grad
+            # Always compute advantage gradient, multiply by w_prime (0 if not using)
+            advantage_grad = agent._compute_advantage_gradient(observations, x)
+            v = v + w_prime * advantage_grad
             x = x + v * dt
             
         actions = x[0]

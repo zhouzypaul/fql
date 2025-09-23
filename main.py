@@ -50,6 +50,7 @@ flags.DEFINE_integer('video_frame_skip', 3, 'Frame skip for videos.')
 flags.DEFINE_integer('bc_eval_interval', 50000, 'BC evaluation interval.')
 flags.DEFINE_integer('bc_eval_episodes', 10, 'Number of episodes for BC evaluation.')
 flags.DEFINE_integer('bc_steps', 500000, 'Number of BC steps.')
+flags.DEFINE_bool('advantage_gradient', False, 'Whether to use advantage gradient.')
 
 flags.DEFINE_float('p_aug', None, 'Probability of applying image augmentation.')
 flags.DEFINE_integer('frame_stack', None, 'Number of frames to stack.')
@@ -276,65 +277,99 @@ def main(_):
             # Special evaluation for diffusion agents with multiple cfg values
             if config['agent_name'] == 'iql_diffusion':
                 max_return = -np.inf
-                cfg_values = [1.0, 1.5, 3.0, 5.0]
-                if config['optimal_var'] in ['softmax', 'sampled_adv_softmax']:
-                    optimality_values = [0.5, 0.55, 0.6, 0.65, 0.7, 0.8, 0.9, 1.0]
-                else:
-                    optimality_values = [1.0]
                 
-                # Store results for each cfg-optimality combination
+                if FLAGS.advantage_gradient:
+                    assert config['optimal_var'] == 'binary', 'Advantage gradient mode is only supported for binary mode.'
+                    print('Using advantage gradient mode. Setting cfg weight to 0 and sweeping w_prime values')
+                    cfg_values = [0.0]
+                    optimality_values = [1.0] # Binary
+                    w_prime_values = [0.1, 0.3, 0.5, 0.8, 1.0, 1.5, 2.0]
+                else:
+                    # Standard CFG evaluation
+                    cfg_values = [1.0, 1.5, 3.0, 5.0]
+                    w_prime_values = [0.0]  # No advantage gradient
+                    if config['optimal_var'] in ['softmax', 'sampled_adv_softmax']:
+                        optimality_values = [0.5, 0.55, 0.6, 0.65, 0.7, 0.8, 0.9, 1.0]
+                    else:
+                        optimality_values = [1.0]
+                
+                # Store results for each cfg-optimality-w_prime combination
                 cfg_optimality_results = {}
                 
                 for cfg in cfg_values:
                     cfg_optimality_results[cfg] = {}
                     for o in optimality_values:
-                        eval_info, trajs, cur_renders = evaluate(
-                            agent=agent,
-                            env=eval_env,
-                            config=config,
-                            num_eval_episodes=FLAGS.eval_episodes,
-                            num_video_episodes=FLAGS.video_episodes,
-                            video_frame_skip=FLAGS.video_frame_skip,
-                            cfg=cfg,
-                            o=o,
-                        )
-                        renders.extend(cur_renders)
-                        
-                        # Store results for this cfg-optimality combination
-                        cfg_optimality_results[cfg][o] = eval_info
-                        
-                        # Track max return across all combinations
-                        max_return = max(max_return, eval_info['episode.return'])
+                        cfg_optimality_results[cfg][o] = {}
+                        for w_prime in w_prime_values:
+                            eval_info, trajs, cur_renders = evaluate(
+                                agent=agent,
+                                env=eval_env,
+                                config=config,
+                                num_eval_episodes=FLAGS.eval_episodes,
+                                num_video_episodes=FLAGS.video_episodes,
+                                video_frame_skip=FLAGS.video_frame_skip,
+                                cfg=cfg,
+                                o=o,
+                                w_prime=w_prime,
+                            )
+                            renders.extend(cur_renders)
+                            
+                            # Store results for this cfg-optimality-w_prime combination
+                            cfg_optimality_results[cfg][o][w_prime] = eval_info
+                            
+                            # Track max return across all combinations
+                            max_return = max(max_return, eval_info['episode.return'])
                     
-                    if config['optimal_var'] == 'binary':
+                    if config['optimal_var'] == 'binary' and not FLAGS.advantage_gradient:
+                        # For standard binary CFG mode (not advantage gradient), log single w_prime=0
+                        w_prime_used = w_prime_values[0]  # This will be 0.0 in standard mode
                         eval_name = f'evaluation_cfg{cfg}'
                         for k in ['episode.return', 'episode.length', 'success']:
-                            eval_metrics[f'{eval_name}/{k}'] = cfg_optimality_results[cfg][1.0][k]
+                            eval_metrics[f'{eval_name}/{k}'] = cfg_optimality_results[cfg][1.0][w_prime_used][k]
 
                 # 1. Log overall best performance
                 eval_metrics['evaluation/episode.return'] = max_return
                                 
-                # 2. Find and log the best cfg-optimality combination
+                # 2. Find and log the best cfg-optimality-w_prime combination
                 best_cfg = None
                 best_o = None
+                best_w_prime = None
                 for cfg in cfg_values:
                     for o in optimality_values:
-                        if cfg_optimality_results[cfg][o]['episode.return'] == max_return:
-                            best_cfg = cfg
-                            best_o = o
+                        for w_prime in w_prime_values:
+                            if cfg_optimality_results[cfg][o][w_prime]['episode.return'] == max_return:
+                                best_cfg = cfg
+                                best_o = o
+                                best_w_prime = w_prime
+                                break
+                        if best_cfg is not None:
                             break
                     if best_cfg is not None:
                         break
                 
                 eval_metrics['evaluation/best_cfg'] = best_cfg
                 eval_metrics['evaluation/best_optimality'] = best_o
+                eval_metrics['evaluation/best_w_prime'] = best_w_prime
                 
-                # 3. Log individual metrics for each cfg-optimality combination
+                # 3. Log individual metrics for each cfg-optimality-w_prime combination
                 # This allows wandb to aggregate (mean/std) across runs and create custom plots
-                if config['optimal_var'] != 'binary':
+                if FLAGS.advantage_gradient:
+                    # For advantage gradient mode, log w_prime sweep results
                     for cfg in cfg_values:
                         for o in optimality_values:
-                            result = cfg_optimality_results[cfg][o]
+                            for w_prime in w_prime_values:
+                                result = cfg_optimality_results[cfg][o][w_prime]
+                                prefix = f"evaluation_cfg{cfg}/o_{o}/w_prime_{w_prime}"
+                                
+                                # Log each metric separately so wandb can aggregate them
+                                eval_metrics[f'{prefix}/episode_return'] = result['episode.return']
+                                eval_metrics[f'{prefix}/success_rate'] = result['success']
+                                eval_metrics[f'{prefix}/episode_length'] = result['episode.length']
+                elif config['optimal_var'] != 'binary':
+                    # Standard CFG mode
+                    for cfg in cfg_values:
+                        for o in optimality_values:
+                            result = cfg_optimality_results[cfg][o][w_prime_values[0]]  # w_prime=0
                             prefix = f"evaluation_cfg{cfg}/o_{o}"
                             
                             # Log each metric separately so wandb can aggregate them
@@ -343,28 +378,53 @@ def main(_):
                             eval_metrics[f'{prefix}/episode_length'] = result['episode.length']
                 
                 # 4. Create heatmap data matrices for visualization
-                returns_matrix = np.array([[cfg_optimality_results[cfg][o]['episode.return'] 
-                                          for cfg in cfg_values] for o in optimality_values])
-                success_matrix = np.array([[cfg_optimality_results[cfg][o]['success'] 
-                                          for cfg in cfg_values] for o in optimality_values])
-                length_matrix = np.array([[cfg_optimality_results[cfg][o]['episode.length'] 
-                                         for cfg in cfg_values] for o in optimality_values])
+                # For advantage gradient mode, create w_prime vs cfg heatmaps
+                if FLAGS.advantage_gradient:
+                    returns_matrix = np.array([[cfg_optimality_results[cfg][optimality_values[0]][w_prime]['episode.return'] 
+                                              for cfg in cfg_values] for w_prime in w_prime_values])
+                    success_matrix = np.array([[cfg_optimality_results[cfg][optimality_values[0]][w_prime]['success'] 
+                                              for cfg in cfg_values] for w_prime in w_prime_values])
+                    length_matrix = np.array([[cfg_optimality_results[cfg][optimality_values[0]][w_prime]['episode.length'] 
+                                             for cfg in cfg_values] for w_prime in w_prime_values])
+                else:
+                    # Standard CFG mode
+                    returns_matrix = np.array([[cfg_optimality_results[cfg][o][w_prime_values[0]]['episode.return'] 
+                                              for cfg in cfg_values] for o in optimality_values])
+                    success_matrix = np.array([[cfg_optimality_results[cfg][o][w_prime_values[0]]['success'] 
+                                              for cfg in cfg_values] for o in optimality_values])
+                    length_matrix = np.array([[cfg_optimality_results[cfg][o][w_prime_values[0]]['episode.length'] 
+                                             for cfg in cfg_values] for o in optimality_values])
                 
                 # 5. Create interactive heatmaps (optional - mainly for individual run inspection)
                 def create_heatmap(data, title, colorscale='Viridis'):
+                    if FLAGS.advantage_gradient:
+                        # For advantage gradient mode: w_prime vs cfg
+                        x_labels = [f'CFG {cfg}' for cfg in cfg_values]
+                        y_labels = [f'w_prime={w}' for w in w_prime_values]
+                        hover_template = '<b>CFG</b>: %{x}<br><b>w_prime</b>: %{y}<br><b>Value</b>: %{z:.4f}<extra></extra>'
+                        x_title = 'CFG Weight'
+                        y_title = 'Advantage Gradient Weight (w_prime)'
+                    else:
+                        # Standard CFG mode: optimality vs cfg
+                        x_labels = [f'CFG {cfg}' for cfg in cfg_values]
+                        y_labels = [f'O={o}' for o in optimality_values]
+                        hover_template = '<b>CFG</b>: %{x}<br><b>Optimality</b>: %{y}<br><b>Value</b>: %{z:.4f}<extra></extra>'
+                        x_title = 'CFG Weight'
+                        y_title = 'Optimality Variable'
+                        
                     return go.Figure(data=go.Heatmap(
                         z=data,
-                        x=[f'CFG {cfg}' for cfg in cfg_values],
-                        y=[f'O={o}' for o in optimality_values],
+                        x=x_labels,
+                        y=y_labels,
                         colorscale=colorscale,
                         text=[[f'{val:.3f}' for val in row] for row in data],
                         texttemplate="%{text}",
                         textfont={"size": 10},
-                        hovertemplate='<b>CFG</b>: %{x}<br><b>Optimality</b>: %{y}<br><b>Value</b>: %{z:.4f}<extra></extra>'
+                        hovertemplate=hover_template
                     )).update_layout(
                         title=f'{title} (Step {i})',
-                        xaxis_title='CFG Weight',
-                        yaxis_title='Optimality Variable',
+                        xaxis_title=x_title,
+                        yaxis_title=y_title,
                         width=600, height=400, font=dict(size=12)
                     )
                 

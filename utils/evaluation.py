@@ -49,6 +49,7 @@ def evaluate(
     cfg=None,
     o=None,
     goal_conditioned=False,
+    w_prime=None,
 ):
     """Evaluate the agent in the environment.
 
@@ -67,7 +68,7 @@ def evaluate(
         A tuple containing the statistics, trajectories, and rendered videos.
     """
     if cfg is not None:
-        actor_fn = partial(supply_rng(agent.sample_actions), temperature=0.0, cfg=cfg, o=o)
+        actor_fn = partial(supply_rng(agent.sample_actions), temperature=0.0, cfg=cfg, o=o, w_prime=w_prime)
     else:
         actor_fn = supply_rng(agent.sample_actions, rng=jax.random.PRNGKey(np.random.randint(0, 2**32)))
     trajs = []
