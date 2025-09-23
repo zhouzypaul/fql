@@ -18,6 +18,7 @@ from ml_collections import config_flags
 from agents import agents
 from envs.env_utils import make_env_and_datasets
 from utils.datasets import Dataset, ReplayBuffer
+from utils.train import train_bc_agent
 from utils.evaluation import evaluate, flatten
 from utils.flax_utils import restore_agent, save_agent
 from utils.log_utils import CsvLogger, get_exp_name, get_flag_dict, get_wandb_video, setup_wandb
@@ -46,12 +47,15 @@ flags.DEFINE_integer('save_interval', 1000000, 'Saving interval.')
 flags.DEFINE_integer('eval_episodes', 50, 'Number of evaluation episodes.')
 flags.DEFINE_integer('video_episodes', 0, 'Number of video episodes for each task.')
 flags.DEFINE_integer('video_frame_skip', 3, 'Frame skip for videos.')
+flags.DEFINE_integer('bc_eval_interval', 50000, 'BC evaluation interval.')
+flags.DEFINE_integer('bc_eval_episodes', 10, 'Number of episodes for BC evaluation.')
+flags.DEFINE_integer('bc_steps', 500000, 'Number of BC steps.')
 
 flags.DEFINE_float('p_aug', None, 'Probability of applying image augmentation.')
 flags.DEFINE_integer('frame_stack', None, 'Number of frames to stack.')
 flags.DEFINE_integer('balanced_sampling', 0, 'Whether to use balanced sampling for online fine-tuning.')
-
 flags.DEFINE_string('optimal_var', 'binary', 'Optimal variable.')
+
 config_flags.DEFINE_config_file('agent', 'agents/fql.py', lock_config=False)
 
 
@@ -108,6 +112,36 @@ def main(_):
         config,
     )
 
+    # Create and train BC agent for sampled_adv_softmax
+    bc_agent = None
+    if config['agent_name'] == 'iql_diffusion' and config['optimal_var'] == 'sampled_adv_softmax':
+        from agents.bc import BCAgent, get_config as get_bc_config
+        bc_config = get_bc_config()
+        bc_agent = BCAgent.create(
+            FLAGS.seed + 1,  # Different seed for BC agent
+            example_batch['observations'],
+            example_batch['actions'],
+            bc_config,
+        )
+        
+        # Train BC agent separately
+        bc_agent = train_bc_agent(bc_agent=bc_agent, 
+                                  train_dataset=train_dataset, 
+                                  val_dataset=val_dataset,
+                                  eval_env=eval_env, 
+                                  eval_episodes=FLAGS.bc_eval_episodes,
+                                  video_episodes=FLAGS.video_episodes,
+                                  video_frame_skip=FLAGS.video_frame_skip,
+                                  bc_steps=FLAGS.bc_steps, 
+                                  eval_interval=FLAGS.bc_eval_interval, 
+                                  wandb_project=FLAGS.wandb_project,
+                                  save_dir=FLAGS.save_dir,
+                                  run_name=f"BC_policy_{FLAGS.wandb_run_group}_{FLAGS.env_name}_seed{FLAGS.seed:02d}_{timestamp}",
+                                  debug=FLAGS.debug,
+                                  wandb_offline=FLAGS.wandb_offline,
+                                  wandb_log_code=FLAGS.wandb_log_code,
+                                  )
+
     # Restore agent.
     if FLAGS.restore_path is not None:
         agent = restore_agent(agent, FLAGS.restore_path, FLAGS.restore_epoch)
@@ -151,7 +185,11 @@ def main(_):
             if config['agent_name'] == 'rebrac':
                 agent, update_info = agent.update(batch, full_update=(i % config['actor_freq'] == 0))
             elif config['agent_name'] == 'iql_diffusion':
-                agent, update_info = agent.update(batch, update_critic=i in range(*config['critic_steps']), update_actor=i in range(*config['actor_steps']))
+                # Train main agent with BC agent for adv_beta computation
+                agent, update_info = agent.update(batch, 
+                                                update_critic=i in range(*config['critic_steps']), 
+                                                update_actor=i in range(*config['actor_steps']),
+                                                bc_agent=bc_agent)
             else:
                 agent, update_info = agent.update(batch)
         else:
@@ -202,6 +240,12 @@ def main(_):
 
             if config['agent_name'] == 'rebrac':
                 agent, update_info = agent.update(batch, full_update=(i % config['actor_freq'] == 0))
+            elif config['agent_name'] == 'iql_diffusion':
+                # Train main agent with BC agent for adv_beta computation
+                agent, update_info = agent.update(batch, 
+                                                update_critic=i in range(*config['critic_steps']), 
+                                                update_actor=i in range(*config['actor_steps']),
+                                                bc_agent=bc_agent)
             else:
                 agent, update_info = agent.update(batch)
 
@@ -213,7 +257,9 @@ def main(_):
                 # Add observations_policy for diffusion agents
                 if config['agent_name'] == 'iql_diffusion':
                     val_batch['observations_policy'] = val_batch['observations']
-                _, val_info = agent.total_loss(val_batch, grad_params=None)
+                    _, val_info = agent.total_loss(val_batch, grad_params=None, bc_agent=bc_agent)
+                else:
+                    _, val_info = agent.total_loss(val_batch, grad_params=None)
                 train_metrics.update({f'validation/{k}': v for k, v in val_info.items()})
             train_metrics['time/epoch_time'] = (time.time() - last_time) / FLAGS.log_interval
             train_metrics['time/total_time'] = time.time() - first_time
@@ -231,7 +277,7 @@ def main(_):
             if config['agent_name'] == 'iql_diffusion':
                 max_return = -np.inf
                 cfg_values = [1.0, 1.5, 3.0, 5.0]
-                if config['optimal_var'] == 'softmax':
+                if config['optimal_var'] in ['softmax', 'sampled_adv_softmax']:
                     optimality_values = [0.5, 0.55, 0.6, 0.65, 0.7, 0.8, 0.9, 1.0]
                 else:
                     optimality_values = [1.0]

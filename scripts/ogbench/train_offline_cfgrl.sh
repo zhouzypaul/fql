@@ -30,12 +30,13 @@ for seed in 1 2 3; do
     --wandb_project cfgrl \
     --seed $seed \
     --env_name cube-single-play-singletask-v0 \
-    --eval_interval 200000 \
+    --eval_interval 100000 \
     --offline_steps 1000000 \
     --save_interval 1000000 \
     --eval_episodes 10 \
+    --save_dir $REPO_ROOT/exp/ \
     --wandb_log_code True \
-    --wandb_run_group softmax_o \
-    --optimal_var softmax \
+    --wandb_run_group sampled_adv_softmax_o \
+    --optimal_var sampled_adv_softmax \
     $@
 done

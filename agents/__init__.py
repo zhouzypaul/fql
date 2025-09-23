@@ -5,6 +5,7 @@ from agents.iql_diffusion import IQLDiffusionAgent
 from agents.rebrac import ReBRACAgent
 from agents.sac import SACAgent
 from agents.cfgrl import CFGRLAgent
+from agents.bc import BCAgent
 
 agents = dict(
     fql=FQLAgent,
@@ -14,4 +15,5 @@ agents = dict(
     rebrac=ReBRACAgent,
     sac=SACAgent,
     cfgrl=CFGRLAgent,
+    bc=BCAgent,
 )

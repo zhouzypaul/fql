@@ -11,6 +11,7 @@ import ml_collections
 import numpy as np
 import optax
 
+from agents.bc import BCAgent
 from utils.flax_utils import TrainState, nonpytree_field
 from utils.networks import MLP, Value
 
@@ -115,7 +116,7 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
             'v_max': v.max(),
         }
 
-    def actor_loss(self, batch, actor_params=None, rng=None):
+    def actor_loss(self, batch, actor_params=None, rng=None, bc_agent: BCAgent | None = None):
         """Compute the actor loss."""
         if rng is None:
             rng = self.rng
@@ -127,21 +128,33 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
         if 'observations_policy' not in batch_with_policy:
             batch_with_policy['observations_policy'] = batch['observations']
 
+        # Compute q and v
         v = self.value(batch_with_policy['observations_policy'])
         if self.config['target_extraction']:
             qs = self.target_critic(batch_with_policy['observations_policy'], actions)
         else:
             qs = self.critic(batch_with_policy['observations_policy'], actions)
         q = jnp.min(qs, axis=0)  # Min over ensemble.
+        
+        # Compute optimal variable
         if self.config['optimal_var'] == 'softmax':
             o = jnp.exp(q) / (jnp.exp(q) + jnp.exp(v))
+        elif self.config['optimal_var'] == 'sampled_adv_softmax':
+            adv_a = q - v
+            # Sample actions from external BC agent to compute adv_beta
+            assert bc_agent is not None, "BC agent must be provided for sampled_adv_softmax optimal_var"
+            bc_rng, rng = jax.random.split(rng)
+            behavior_actions = bc_agent.sample_actions(batch_with_policy['observations_policy'], seed=bc_rng)
+            behavior_qs = self.critic(batch_with_policy['observations_policy'], behavior_actions)
+            behavior_q = jnp.min(behavior_qs, axis=0)  # Min over ensemble
+            adv_beta = behavior_q - v
+            o = jnp.exp(adv_a) / (jnp.exp(adv_a) + jnp.exp(adv_beta))
         elif self.config['optimal_var'] == 'binary':
-            # exp_a = jnp.exp((q - v) * self.config['temperature'])
-            # exp_a = jnp.minimum(exp_a, 100.0)
-            exp_a = ((q-v) > 0).astype(jnp.float32)
+            o = ((q-v) > 0).astype(jnp.float32)
         else:
             raise ValueError(f"Invalid optimal_var: {self.config['optimal_var']}")
 
+        # Compute noised actions
         x1 = actions
         x0 = jax.random.normal(eps_rng, x1.shape)
         t = jax.random.randint(time_rng, (x1.shape[0],), 0, self.config['denoise_steps'] + 1).astype(jnp.float32) / self.config['denoise_steps']
@@ -150,13 +163,13 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
         vel = (x1 - x0)
 
         # Positive samples
-        if self.config['optimal_var'] == 'softmax':
+        if self.config['optimal_var'] in ['softmax', 'sampled_adv_softmax']:
             pred_vel_positive = self.actor(batch_with_policy['observations_policy'], o, x_t, t, params=actor_params)
             vel_loss_positive = jnp.mean(((vel - pred_vel_positive)**2), axis=-1)
         elif self.config['optimal_var'] == 'binary':
             idx_positive = jnp.ones((x1.shape[0],), dtype=jnp.int32)
             pred_vel_positive = self.actor(batch_with_policy['observations_policy'], idx_positive, x_t, t, params=actor_params)
-            vel_loss_positive = jnp.mean(((vel - pred_vel_positive)**2), axis=-1) * exp_a
+            vel_loss_positive = jnp.mean(((vel - pred_vel_positive)**2), axis=-1) * o
         else:
             raise ValueError(f"Invalid optimal_var: {self.config['optimal_var']}")
 
@@ -167,25 +180,21 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
 
         actor_loss = jnp.mean(vel_loss_positive + vel_loss_uncond * 0.1)
         
-        info = {
+        return actor_loss, {
             'actor_q': q.mean(),
             'actor_loss': actor_loss,
             'actor_positive_ratio': ((q-v) > 0).mean(),
             'actor_loss_positive': vel_loss_positive.mean(),
             'actor_loss_uncond': vel_loss_uncond.mean(),
             'actor_losses': vel_loss_positive + vel_loss_uncond * 0.1,
+            'o_mean': o.mean(),
+            'o_std': o.std(),
+            'o_min': o.min(),
+            'o_max': o.max(),
         }
-        
-        if self.config['optimal_var'] == 'softmax':
-            info['o_mean'] = o.mean()
-            info['o_std'] = o.std()
-            info['o_min'] = o.min()
-            info['o_max'] = o.max()
-
-        return actor_loss, info
 
     @partial(jax.jit, static_argnames=['update_critic', 'update_actor'])
-    def update(agent, batch, update_critic=True, update_actor=True):
+    def update(agent, batch, update_critic=True, update_actor=True, bc_agent=None):
         new_rng, actor_rng = jax.random.split(agent.rng, 2)
 
         def critic_loss_fn(critic_params):
@@ -195,7 +204,7 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
             return agent.value_loss(batch, value_params)
         
         def actor_loss_fn(actor_params):
-            return agent.actor_loss(batch, actor_params, rng=actor_rng)
+            return agent.actor_loss(batch, actor_params, rng=actor_rng, bc_agent=bc_agent)
         
         if update_critic:
             new_critic, critic_info = agent.critic.apply_loss_fn(loss_fn=critic_loss_fn)
@@ -226,7 +235,7 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
         dt = 1.0 / agent.config['denoise_steps']
         idx_positive = jnp.ones((x.shape[0],), dtype=jnp.int32)
         idx_uncond = jnp.zeros((x.shape[0],), dtype=jnp.int32)
-        if agent.config['optimal_var'] == 'softmax':
+        if agent.config['optimal_var'] in ['softmax', 'sampled_adv_softmax']:
             idx_positive *= o
         for t in range(agent.config['denoise_steps']):
             ti = jnp.ones((x.shape[0],)) * (t / agent.config['denoise_steps'])
@@ -239,14 +248,14 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
         return actions
 
     @jax.jit
-    def total_loss(self, batch, grad_params, rng=None):
+    def total_loss(self, batch, grad_params, rng=None, bc_agent=None):
         """Compute the total loss for compatibility with main.py evaluation."""
         if rng is None:
             rng = self.rng
         
         critic_loss, critic_info = self.critic_loss(batch)
         value_loss, value_info = self.value_loss(batch)
-        actor_loss, actor_info = self.actor_loss(batch, rng=rng)
+        actor_loss, actor_info = self.actor_loss(batch, rng=rng, bc_agent=bc_agent)
 
         total_loss = critic_loss + value_loss + actor_loss
         info = {**critic_info, **value_info, **actor_info}
@@ -283,10 +292,10 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
             activation_fn = nn.gelu
         print(f"Using activation function: {activation_fn}")
 
-        if config['optimal_var'] == 'softmax':
-            actor_def = DiffusionPolicyContinuous(config['actor_hidden_dims'], action_dim, mlp_kwargs=dict(activations=activation_fn, layer_norm=config['use_layer_norm']))
-        else:
+        if config['optimal_var'] == 'binary':
             actor_def = DiffusionPolicy(config['actor_hidden_dims'], action_dim, mlp_kwargs=dict(activations=activation_fn, layer_norm=config['use_layer_norm']))
+        else:
+            actor_def = DiffusionPolicyContinuous(config['actor_hidden_dims'], action_dim, mlp_kwargs=dict(activations=activation_fn, layer_norm=config['use_layer_norm']))
         
         if config['opt_decay_schedule'] == "cosine":
             # Create a custom schedule that starts cosine decay when actor training begins
@@ -357,7 +366,7 @@ def get_config():
             action_distribution='data',
             critic_steps=(0, 1_000000),
             actor_steps=(0, 1_000_000),
-            optimal_var='binary', # 'binary' or 'softmax'
+            optimal_var='binary', # 'binary', 'softmax', or 'sampled_adv_softmax'
         )
     )
     return config
