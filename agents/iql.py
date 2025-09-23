@@ -256,6 +256,8 @@ def get_config():
             alpha=10.0,  # Temperature in AWR or BC coefficient in DDPG+BC.
             const_std=True,  # Whether to use constant standard deviation for the actor.
             encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).
+            critic_steps=(0, 1_000000),
+            actor_steps=(0, 1_000_000),
         )
     )
     return config

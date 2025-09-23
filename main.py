@@ -281,9 +281,9 @@ def main(_):
                 if FLAGS.advantage_gradient:
                     assert config['optimal_var'] == 'binary', 'Advantage gradient mode is only supported for binary mode.'
                     print('Using advantage gradient mode. Setting cfg weight to 0 and sweeping w_prime values')
-                    cfg_values = [0.0]
+                    cfg_values = [0.0, 1.0, 1.5, 3.0, 5.0]
                     optimality_values = [1.0] # Binary
-                    w_prime_values = [0.1, 0.3, 0.5, 0.8, 1.0, 1.5, 2.0]
+                    w_prime_values = [0.0, 0.1, 0.3, 0.5, 0.8, 1.0, 1.5, 2.0]
                 else:
                     # Standard CFG evaluation
                     cfg_values = [1.0, 1.5, 3.0, 5.0]
