@@ -265,6 +265,8 @@ def get_config():
             flow_steps=10,  # Number of flow steps.
             normalize_q_loss=False,  # Whether to normalize the Q loss.
             encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).
+            critic_steps=(0, 1_000000),
+            actor_steps=(0, 1_000_000),
         )
     )
     return config

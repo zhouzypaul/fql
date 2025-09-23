@@ -91,6 +91,23 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
     value: TrainState
     actor: TrainState
     config: dict = flax.struct.field(pytree_node=False)
+    
+    def _compute_advantage_gradient(self, observations, actions):
+        """
+        Compute gradient of sigmoid(A(s,a)) with respect to actions.
+        """
+        def sigmoid_advantage_fn(a):
+            if self.config['target_extraction']:
+                qs = self.target_critic(observations, a)
+            else:
+                qs = self.critic(observations, a)
+            q = jnp.min(qs, axis=0)
+            v = self.value(observations)
+            advantage = q - v
+            return jax.nn.sigmoid(advantage).sum()
+        
+        grad_fn = jax.grad(sigmoid_advantage_fn)
+        return grad_fn(actions)
 
     def critic_loss(self, batch, critic_params=None):
         """Compute the critic loss."""
@@ -228,7 +245,7 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
         }
 
     @jax.jit
-    def sample_actions(agent, observations: np.ndarray, *, seed: Any, temperature: float = 1., cfg = 1., o = 1.) -> jnp.ndarray:
+    def sample_actions(agent, observations: np.ndarray, *, seed: Any, temperature: float = 1., cfg = 1., o = 1., w_prime = None) -> jnp.ndarray:
         observations = observations[None]
 
         x = jax.random.normal(seed, (observations.shape[0], agent.config['action_dim']))
@@ -242,7 +259,11 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
             v_positive = agent.actor(observations, idx_positive, x, ti)
             v_uncond = agent.actor(observations, idx_uncond, x, ti)
             v = v_uncond + cfg * (v_positive - v_uncond)
-            x = x + v*dt
+            if w_prime > 0:
+                advantage_grad = agent._compute_advantage_gradient(observations, x)
+                v = v + w_prime * advantage_grad
+            x = x + v * dt
+            
         actions = x[0]
         actions = jnp.clip(actions, -1, 1)
         return actions
@@ -367,6 +388,7 @@ def get_config():
             critic_steps=(0, 1_000000),
             actor_steps=(0, 1_000_000),
             optimal_var='binary', # 'binary', 'softmax', or 'sampled_adv_softmax'
+            w_prime=0.0,  # Weight for advantage gradient term ∇_a sigmoid(A(s,a))
         )
     )
     return config
