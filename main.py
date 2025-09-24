@@ -75,6 +75,7 @@ def main(_):
 
     env, eval_env, train_dataset, val_dataset = make_env_and_datasets(FLAGS.env_name, frame_stack=FLAGS.frame_stack)
     if FLAGS.eval_batch_size > 1:
+        assert FLAGS.eval_episodes % FLAGS.eval_batch_size == 0, 'eval_episodes must be divisible by eval_batch_size'
         env_fns = [lambda: make_env_and_datasets(FLAGS.env_name, frame_stack=FLAGS.frame_stack)[1] for _ in range(FLAGS.eval_batch_size)]
         venv = gym.vector.AsyncVectorEnv(env_fns)
     else:

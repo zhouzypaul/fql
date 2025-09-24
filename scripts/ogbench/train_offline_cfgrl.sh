@@ -24,7 +24,7 @@ rsync -a --delete \
 
 cd "$TMP"
 
-for seed in 1; do
+for seed in 1 2 3; do
     python main.py \
     --agent agents/iql_diffusion.py \
     --wandb_project cfgrl \
@@ -35,7 +35,6 @@ for seed in 1; do
     --save_interval 1000000 \
     --eval_episodes 10 \
     --eval_batch_size 10 \
-    --video_episodes 0 \
     --save_dir $REPO_ROOT/exp/ \
     --wandb_log_code True \
     --wandb_run_group softmax_debug \
