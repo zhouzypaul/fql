@@ -245,7 +245,7 @@ def rollout(
         assert num_eval_episodes % batch_size == 0
         total_batches = num_eval_episodes // batch_size
 
-        for _ in trange(total_batches):
+        for _ in range(total_batches):
             traj_batch, infos_batch, _, returns, lengths = run_episodes(
                 agent,
                 venv,

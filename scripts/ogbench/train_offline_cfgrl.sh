@@ -37,7 +37,7 @@ for seed in 1 2 3; do
     --eval_batch_size 10 \
     --save_dir $REPO_ROOT/exp/ \
     --wandb_log_code True \
-    --wandb_run_group softmax_debug \
-    --optimal_var softmax \
+    --wandb_run_group sampled_adv_softmax_o_debug \
+    --optimal_var sampled_adv_softmax \
     $@
 done

@@ -295,8 +295,7 @@ def main(_):
                 # Store results for each cfg-optimality combination
                 cfg_optimality_results = {}
                 
-                t0 = time.time()
-                for cfg in cfg_values:
+                for cfg in tqdm.tqdm(cfg_values, desc='Evaluating various cfg values'):
                     cfg_optimality_results[cfg] = {}
                     for o in optimality_values:
                         eval_info, trajs, cur_renders = rollout(
@@ -323,8 +322,6 @@ def main(_):
                         for k in ['episode.return', 'episode.length', 'success']:
                             eval_metrics[f'{eval_name}/{k}'] = cfg_optimality_results[cfg][1.0][k]
                             
-                t1 = time.time()
-                print(f"Time taken: {t1 - t0} seconds")
                 # 1. Log overall best performance
                 eval_metrics['evaluation/episode.return'] = max_return
                                 
