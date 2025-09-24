@@ -229,7 +229,7 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
 
     @jax.jit
     def sample_actions(agent, observations: np.ndarray, *, seed: Any, temperature: float = 1., cfg = 1., o = 1.) -> jnp.ndarray:
-        observations = observations[None]
+        observations = observations[None] if observations.ndim == 1 else observations
 
         x = jax.random.normal(seed, (observations.shape[0], agent.config['action_dim']))
         dt = 1.0 / agent.config['denoise_steps']
@@ -243,9 +243,56 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
             v_uncond = agent.actor(observations, idx_uncond, x, ti)
             v = v_uncond + cfg * (v_positive - v_uncond)
             x = x + v*dt
-        actions = x[0]
+        if x.shape[0] == 1:
+            actions = x[0]
+        else:
+            actions = x
         actions = jnp.clip(actions, -1, 1)
         return actions
+
+    # @jax.jit
+    # def sample_actions_vectorized(agent, observations: jnp.ndarray, *, seed: Any, temperature: float = 1., cfg = 1., o = 1., goals: jnp.ndarray = None) -> jnp.ndarray:
+    #     """Vectorized action sampling for batch processing.
+        
+    #     Args:
+    #         observations: Batch of observations of shape (batch_size, obs_dim)
+    #         seed: Random seed
+    #         temperature: Sampling temperature (unused for diffusion)
+    #         cfg: CFG guidance strength
+    #         o: Optimality variable value
+    #         goals: Optional batch of goals for goal-conditioned agents
+            
+    #     Returns:
+    #         Batch of actions of shape (batch_size, action_dim)
+    #     """
+    #     batch_size = observations.shape[0]
+        
+    #     # Generate noise for entire batch
+    #     x = jax.random.normal(seed, (batch_size, agent.config['action_dim']))
+    #     dt = 1.0 / agent.config['denoise_steps']
+        
+    #     # Set up conditioning
+    #     if agent.config['optimal_var'] in ['softmax', 'sampled_adv_softmax']:
+    #         idx_positive = jnp.full((batch_size,), o, dtype=jnp.int32)
+    #     else:
+    #         idx_positive = jnp.ones((batch_size,), dtype=jnp.int32)
+    #     idx_uncond = jnp.zeros((batch_size,), dtype=jnp.int32)
+        
+    #     # Denoising loop - vectorized across batch
+    #     for t in range(agent.config['denoise_steps']):
+    #         ti = jnp.full((batch_size,), t / agent.config['denoise_steps'])
+            
+    #         # Vectorized forward passes
+    #         v_positive = agent.actor(observations, idx_positive, x, ti)
+    #         v_uncond = agent.actor(observations, idx_uncond, x, ti)
+            
+    #         # CFG guidance
+    #         v = v_uncond + cfg * (v_positive - v_uncond)
+    #         x = x + v * dt
+        
+    #     # Clip actions
+    #     actions = jnp.clip(x, -1, 1)
+    #     return actions
 
     @jax.jit
     def total_loss(self, batch, grad_params, rng=None, bc_agent=None):

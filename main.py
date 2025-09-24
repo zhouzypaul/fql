@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import tqdm
 import wandb
+import gymnasium as gym
 from absl import app, flags
 from ml_collections import config_flags
 
@@ -19,7 +20,7 @@ from agents import agents
 from envs.env_utils import make_env_and_datasets
 from utils.datasets import Dataset, ReplayBuffer
 from utils.train import train_bc_agent
-from utils.evaluation import evaluate, flatten
+from utils.evaluation import rollout, flatten
 from utils.flax_utils import restore_agent, save_agent
 from utils.log_utils import CsvLogger, get_exp_name, get_flag_dict, get_wandb_video, setup_wandb
 
@@ -43,6 +44,7 @@ flags.DEFINE_integer('buffer_size', 2000000, 'Replay buffer size.')
 flags.DEFINE_integer('log_interval', 5000, 'Logging interval.')
 flags.DEFINE_integer('eval_interval', 100000, 'Evaluation interval.')
 flags.DEFINE_integer('save_interval', 1000000, 'Saving interval.')
+flags.DEFINE_integer('eval_batch_size', 10, 'Evaluation batch size.')
 
 flags.DEFINE_integer('eval_episodes', 50, 'Number of evaluation episodes.')
 flags.DEFINE_integer('video_episodes', 0, 'Number of video episodes for each task.')
@@ -72,6 +74,11 @@ def main(_):
     
 
     env, eval_env, train_dataset, val_dataset = make_env_and_datasets(FLAGS.env_name, frame_stack=FLAGS.frame_stack)
+    if FLAGS.eval_batch_size > 1:
+        env_fns = [lambda: make_env_and_datasets(FLAGS.env_name, frame_stack=FLAGS.frame_stack)[1] for _ in range(FLAGS.eval_batch_size)]
+        venv = gym.vector.AsyncVectorEnv(env_fns)
+    else:
+        venv = None
     if FLAGS.video_episodes > 0:
         assert 'singletask' in FLAGS.env_name, 'Rendering is currently only supported for OGBench environments.'
     if FLAGS.online_steps > 0:
@@ -129,7 +136,8 @@ def main(_):
                                   train_dataset=train_dataset, 
                                   val_dataset=val_dataset,
                                   eval_env=eval_env, 
-                                  eval_episodes=FLAGS.bc_eval_episodes,
+                                  venv=venv,
+                                  eval_episodes=FLAGS.eval_episodes,
                                   video_episodes=FLAGS.video_episodes,
                                   video_frame_skip=FLAGS.video_frame_skip,
                                   bc_steps=FLAGS.bc_steps, 
@@ -140,6 +148,7 @@ def main(_):
                                   debug=FLAGS.debug,
                                   wandb_offline=FLAGS.wandb_offline,
                                   wandb_log_code=FLAGS.wandb_log_code,
+                                  eval_batch_size=FLAGS.eval_batch_size,
                                   )
 
     # Restore agent.
@@ -285,12 +294,14 @@ def main(_):
                 # Store results for each cfg-optimality combination
                 cfg_optimality_results = {}
                 
+                t0 = time.time()
                 for cfg in cfg_values:
                     cfg_optimality_results[cfg] = {}
                     for o in optimality_values:
-                        eval_info, trajs, cur_renders = evaluate(
+                        eval_info, trajs, cur_renders = rollout(
                             agent=agent,
                             env=eval_env,
+                            venv=venv,
                             config=config,
                             num_eval_episodes=FLAGS.eval_episodes,
                             num_video_episodes=FLAGS.video_episodes,
@@ -310,7 +321,9 @@ def main(_):
                         eval_name = f'evaluation_cfg{cfg}'
                         for k in ['episode.return', 'episode.length', 'success']:
                             eval_metrics[f'{eval_name}/{k}'] = cfg_optimality_results[cfg][1.0][k]
-
+                            
+                t1 = time.time()
+                print(f"Time taken: {t1 - t0} seconds")
                 # 1. Log overall best performance
                 eval_metrics['evaluation/episode.return'] = max_return
                                 
@@ -375,9 +388,10 @@ def main(_):
                 
             else:
                 # Standard evaluation for other agents
-                eval_info, trajs, cur_renders = evaluate(
+                eval_info, trajs, cur_renders = rollout(
                     agent=agent,
                     env=eval_env,
+                    venv=venv,
                     config=config,
                     num_eval_episodes=FLAGS.eval_episodes,
                     num_video_episodes=FLAGS.video_episodes,
