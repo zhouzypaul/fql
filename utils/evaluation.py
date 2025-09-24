@@ -146,7 +146,6 @@ def run_episodes(
     rng = np.random.default_rng()
 
     while not np.all(~active):
-        actor_kwargs = dict(observations=policy_observations, temperature=eval_temperature)
         if goal_conditioned:
             actions = actor_fn(observations=policy_observations, temperature=eval_temperature, goals=goals)
         else:
