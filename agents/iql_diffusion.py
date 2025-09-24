@@ -1,4 +1,3 @@
-import copy
 import math
 from typing import Any
 from functools import partial
@@ -229,7 +228,7 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
 
     @jax.jit
     def sample_actions(agent, observations: np.ndarray, *, seed: Any, temperature: float = 1., cfg = 1., o = 1.) -> jnp.ndarray:
-        observations = observations[None]
+        observations = observations[None] if observations.ndim == 1 else observations # Might be hacky because we assume single dimension action, with optimal additional batch dimension
 
         x = jax.random.normal(seed, (observations.shape[0], agent.config['action_dim']))
         dt = 1.0 / agent.config['denoise_steps']
@@ -243,7 +242,10 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
             v_uncond = agent.actor(observations, idx_uncond, x, ti)
             v = v_uncond + cfg * (v_positive - v_uncond)
             x = x + v*dt
-        actions = x[0]
+        if x.shape[0] == 1 and x.ndim == 2:
+            actions = x[0]
+        else:
+            actions = x
         actions = jnp.clip(actions, -1, 1)
         return actions
 

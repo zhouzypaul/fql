@@ -1,11 +1,11 @@
 import os
 import json
 import tqdm
-import gym
+import gymnasium as gym
 import wandb
 
 from utils.log_utils import CsvLogger, get_wandb_video, setup_wandb
-from utils.evaluation import evaluate
+from utils.evaluation import rollout
 from utils.flax_utils import save_agent
 from agents.bc import BCAgent, get_config as get_bc_config
 from utils.datasets import Dataset
@@ -14,6 +14,7 @@ def train_bc_agent(bc_agent: BCAgent,
                    train_dataset: Dataset, 
                    val_dataset: Dataset, 
                    eval_env: gym.Env, 
+                   venv: gym.vector.AsyncVectorEnv,
                    bc_steps: int = 500_000, 
                    log_interval: int = 5000, 
                    eval_interval: int = 50000, 
@@ -25,7 +26,8 @@ def train_bc_agent(bc_agent: BCAgent,
                    debug: bool = False,
                    wandb_offline: bool = False,
                    wandb_log_code: bool = False,
-                   save_dir: str = None):
+                   save_dir: str = None,
+                   eval_batch_size: int = 10):
     """Train BC agent separately with its own wandb run."""
     
     # Set up separate wandb run for BC training
@@ -81,9 +83,10 @@ def train_bc_agent(bc_agent: BCAgent,
             
             renders = []
             # Standard evaluation for other agents
-            eval_info, trajs, cur_renders = evaluate(
+            eval_info, trajs, cur_renders = rollout(
                 agent=bc_agent,
                 env=eval_env,
+                venv=venv,
                 num_eval_episodes=eval_episodes,
                 num_video_episodes=video_episodes,
                 video_frame_skip=video_frame_skip,
