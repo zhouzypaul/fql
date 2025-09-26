@@ -57,6 +57,8 @@ flags.DEFINE_float('p_aug', None, 'Probability of applying image augmentation.')
 flags.DEFINE_integer('frame_stack', None, 'Number of frames to stack.')
 flags.DEFINE_integer('balanced_sampling', 0, 'Whether to use balanced sampling for online fine-tuning.')
 flags.DEFINE_string('optimal_var', 'binary', 'Optimal variable.')
+flags.DEFINE_float('awr_temperature', 1.0, 'AWR temperature.')
+flags.DEFINE_float('softmax_beta', 1.0, 'Softmax beta.')
 
 config_flags.DEFINE_config_file('agent', 'agents/fql.py', lock_config=False)
 
@@ -66,6 +68,8 @@ def main(_):
     config = FLAGS.agent
     
     config['optimal_var'] = FLAGS.optimal_var
+    config['awr_temperature'] = FLAGS.awr_temperature
+    config['softmax_beta'] = FLAGS.softmax_beta
     # Create a more descriptive experiment name
     agent_name = config['agent_name']
     env_short = FLAGS.env_name.replace('-singletask', '').replace('-v0', '').replace('-v1', '').replace('-v2', '')
@@ -279,7 +283,7 @@ def main(_):
             train_logger.log(train_metrics, step=i)
 
         # Evaluate agent.
-        if FLAGS.eval_interval != 0 and (i == 1 or i % FLAGS.eval_interval == 0) and i >= config['actor_steps'][0]:
+        if FLAGS.eval_interval != 0 and i % FLAGS.eval_interval == 0 and i >= config['actor_steps'][0]:
             renders = []
             eval_metrics = {}
             
@@ -316,11 +320,6 @@ def main(_):
                         
                         # Track max return across all combinations
                         max_return = max(max_return, eval_info['episode.return'])
-                    
-                    if config['optimal_var'] == 'binary':
-                        eval_name = f'evaluation_cfg{cfg}'
-                        for k in ['episode.return', 'episode.length', 'success']:
-                            eval_metrics[f'{eval_name}/{k}'] = cfg_optimality_results[cfg][1.0][k]
                             
                 # 1. Log overall best performance
                 eval_metrics['evaluation/episode.return'] = max_return
@@ -342,16 +341,15 @@ def main(_):
                 
                 # 3. Log individual metrics for each cfg-optimality combination
                 # This allows wandb to aggregate (mean/std) across runs and create custom plots
-                if config['optimal_var'] != 'binary':
-                    for cfg in cfg_values:
-                        for o in optimality_values:
-                            result = cfg_optimality_results[cfg][o]
-                            prefix = f"evaluation_cfg{cfg}/o_{o}"
-                            
-                            # Log each metric separately so wandb can aggregate them
-                            eval_metrics[f'{prefix}/episode_return'] = result['episode.return']
-                            eval_metrics[f'{prefix}/success_rate'] = result['success']
-                            eval_metrics[f'{prefix}/episode_length'] = result['episode.length']
+                for cfg in cfg_values:
+                    for o in optimality_values:
+                        result = cfg_optimality_results[cfg][o]
+                        prefix = f"evaluation_cfg{cfg}/o_{o}"
+                        
+                        # Log each metric separately so wandb can aggregate them
+                        eval_metrics[f'{prefix}/episode_return'] = result['episode.return']
+                        eval_metrics[f'{prefix}/success_rate'] = result['success']
+                        eval_metrics[f'{prefix}/episode_length'] = result['episode.length']
                 
                 # 4. Create heatmap data matrices for visualization
                 returns_matrix = np.array([[cfg_optimality_results[cfg][o]['episode.return'] 

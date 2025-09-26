@@ -62,8 +62,7 @@ def train_bc_agent(bc_agent: BCAgent,
         
         # Log training metrics
         if i % log_interval == 0:
-            bc_metrics = {f'bc_training/{k}': v for k, v in bc_info.items()}
-            bc_metrics['bc_training/step'] = i
+            bc_metrics = {f'training/{k}': v for k, v in bc_info.items()}
             wandb.log(bc_metrics, step=i)
             bc_logger.log(bc_metrics, step=i)
         
@@ -77,7 +76,7 @@ def train_bc_agent(bc_agent: BCAgent,
                 bc_val_loss, bc_val_info = bc_agent.policy_loss(val_batch)
                 
                 # Log validation metrics
-                val_metrics = {f'bc_eval/{k}': v for k, v in bc_val_info.items()}
+                val_metrics = {f'validation/{k}': v for k, v in bc_val_info.items()}
                 eval_metrics.update(val_metrics)
                 print(f"BC Val Loss at step {i}: {bc_val_loss:.4f}")
             
