@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export PYOPENGL_PLATFORM=egl
 export MUJOCO_GL=egl
@@ -24,35 +24,14 @@ rsync -a --delete \
 
 cd "$TMP"
 
-# Binary, sampled_adv_softmax, softmax
-for algo in sampled_adv_softmax softmax; do
-  for seed in 1 2 3; do
-      python main.py \
-      --agent agents/iql_diffusion.py \
-      --wandb_project cfgrl \
-      --seed $seed \
-      --env_name scene-play-singletask-v0 \
-      --eval_interval 200000 \
-      --offline_steps 1000000 \
-      --save_interval 1000000 \
-      --eval_episodes 10 \
-      --eval_batch_size 10 \
-      --save_dir $REPO_ROOT/exp/ \
-      --wandb_log_code True \
-      --wandb_run_group ${algo}_o \
-      --optimal_var ${algo} \
-      $@
-  done
-done
 
-# Binary awr loss
-for awr_temperature in 0.1 0.3 0.6 1.0; do
-  for seed in 1 2 3; do
+for seed in 1 2 3; do
+    (
       python main.py \
       --agent agents/iql_diffusion.py \
       --wandb_project cfgrl \
       --seed $seed \
-      --env_name scene-play-singletask-v0 \
+      --env_name cube-single-play-singletask-v0 \
       --eval_interval 100000 \
       --offline_steps 1000000 \
       --save_interval 1000000 \
@@ -60,22 +39,41 @@ for awr_temperature in 0.1 0.3 0.6 1.0; do
       --eval_batch_size 10 \
       --save_dir $REPO_ROOT/exp/ \
       --wandb_log_code True \
-      --wandb_run_group binary_awr_loss_${awr_temperature} \
-      --optimal_var binary_awr_loss \
-      --awr_temperature $awr_temperature \
+      --wandb_run_group binary_softmax_loss_3.0 \
+      --optimal_var binary_softmax_loss \
+      --softmax_beta 3.0 \
       $@
-  done
+    ) || echo "Run failed for env: cube-single-play-singletask-v0, softmax_beta: 3.0, seed: $seed"
 done
 
-for env in cube-single-play-singletask-v0 scene-play-singletask-v0; do
-  # Binary softmax loss
-  for softmax_beta in 0.5 1.0 2.0 3.0; do
-    for seed in 1 2 3; do
+(
+  python main.py \
+  --agent agents/iql_diffusion.py \
+  --wandb_project cfgrl \
+  --seed 3 \
+  --env_name scene-play-singletask-v0 \
+  --eval_interval 100000 \
+  --offline_steps 1000000 \
+  --save_interval 1000000 \
+  --eval_episodes 10 \
+  --eval_batch_size 10 \
+  --save_dir $REPO_ROOT/exp/ \
+  --wandb_log_code True \
+  --wandb_run_group binary_softmax_loss_1.0 \
+  --optimal_var binary_softmax_loss \
+  --softmax_beta 1.0 \
+  $@
+) || echo "Run failed for env: cube-single-play-singletask-v0, softmax_beta: 3.0, seed: 3"
+
+# Binary softmax loss
+for softmax_beta in 2.0 3.0; do
+  for seed in 1 2 3; do
+      (
         python main.py \
         --agent agents/iql_diffusion.py \
         --wandb_project cfgrl \
         --seed $seed \
-        --env_name $env \
+        --env_name scene-play-singletask-v0 \
         --eval_interval 100000 \
         --offline_steps 1000000 \
         --save_interval 1000000 \
@@ -87,6 +85,6 @@ for env in cube-single-play-singletask-v0 scene-play-singletask-v0; do
         --optimal_var binary_softmax_loss \
         --softmax_beta $softmax_beta \
         $@
-    done
+      ) || echo "Run failed for env: scene-play-singletask-v0, softmax_beta: $softmax_beta, seed: $seed"
   done
 done

@@ -136,10 +136,11 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
         q = jnp.min(qs, axis=0)  # Min over ensemble.
         adv = q - v
         
-        additional_info = {}
-        # Compute optimal variable
+        # Compute optimal variable and loss weights
         if self.config['optimal_var'] == 'softmax':
             o = jnp.exp(q) / (jnp.exp(q) + jnp.exp(v) + 1e-8)
+            loss_weight = jnp.ones((actions.shape[0],), dtype=jnp.float32)
+        
         elif self.config['optimal_var'] == 'sampled_adv_softmax':
             # Sample actions from external BC agent to compute adv_beta
             assert bc_agent is not None, "BC agent must be provided for sampled_adv_softmax optimal_var"
@@ -149,30 +150,22 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
             behavior_q = jnp.min(behavior_qs, axis=0)  # Min over ensemble
             adv_beta = behavior_q - v
             o = jnp.exp(adv) / (jnp.exp(adv) + jnp.exp(adv_beta) + 1e-8)
+            loss_weight = jnp.ones((actions.shape[0],), dtype=jnp.float32)
+        
         elif self.config['optimal_var'] == 'binary':
+            o = jnp.ones((actions.shape[0],), dtype=jnp.int32)
             loss_weight = (adv > 0).astype(jnp.float32)
+        
         elif self.config['optimal_var'] == 'binary_awr_loss':
-            loss_weight = jnp.where(adv > 0, jnp.exp(adv * self.config['awr_temperature']), 0)
+            o = jnp.ones((actions.shape[0],), dtype=jnp.int32)
+            loss_weight = jnp.where(adv > 0, jnp.clip(jnp.exp(adv * self.config['awr_temperature']), 0, 1e8), 0)
             loss_weight = jnp.minimum(loss_weight, 100.0)
-            effective_batch_size = jnp.sum(loss_weight)**2 / jnp.sum(loss_weight**2)
-            additional_info = {
-                'effective_batch_size': effective_batch_size,
-                'max_weight': jnp.max(loss_weight),
-            }
+        
         elif self.config['optimal_var'] == 'binary_softmax_loss':
-            exp_a = jnp.where(adv > 0, jnp.exp(adv * self.config['softmax_beta']), 0) 
+            o = jnp.ones((actions.shape[0],), dtype=jnp.int32)
+            exp_a = jnp.where(adv > 0, jnp.clip(jnp.exp(adv * self.config['softmax_beta']), 0, 1e8), 0)
             loss_weight = exp_a / (jnp.sum(exp_a, axis=0) + 1e-8)
-            assert jnp.isclose(jnp.sum(loss_weight), 1).item
-            # Compute effective batch size and weight statistics
-            effective_batch_size = jnp.sum(loss_weight)**2 / (jnp.sum(loss_weight**2) + 1e-8)
-            sorted_weights = jnp.sort(loss_weight)
-            total_mass = jnp.sum(sorted_weights)
-            top_10_mass = sorted_weights[-int(0.1*len(sorted_weights)):].sum() / (total_mass + 1e-8)
-            additional_info = {
-                'effective_batch_size': effective_batch_size,
-                'top_10_mass': top_10_mass,
-                'max_weight': jnp.max(loss_weight),
-            }
+
         else:
             raise ValueError(f"Invalid optimal_var: {self.config['optimal_var']}")
 
@@ -185,15 +178,8 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
         vel = (x1 - x0)
 
         # Positive samples
-        if self.config['optimal_var'] in ['softmax', 'sampled_adv_softmax']:
-            pred_vel_positive = self.actor(batch_with_policy['observations_policy'], o, x_t, t, params=actor_params)
-            vel_loss_positive = jnp.mean(((vel - pred_vel_positive)**2), axis=-1)
-        elif self.config['optimal_var'] in ['binary', 'binary_awr_loss', 'binary_softmax_loss']:
-            o = jnp.ones((x1.shape[0],), dtype=jnp.int32)
-            pred_vel_positive = self.actor(batch_with_policy['observations_policy'], o, x_t, t, params=actor_params)
-            vel_loss_positive = jnp.mean(((vel - pred_vel_positive)**2), axis=-1) * loss_weight
-        else:
-            raise ValueError(f"Invalid optimal_var: {self.config['optimal_var']}")
+        pred_vel_positive = self.actor(batch_with_policy['observations_policy'], o, x_t, t, params=actor_params)
+        vel_loss_positive = jnp.mean(((vel - pred_vel_positive)**2), axis=-1) * loss_weight
 
         # Unconditional samples
         idx_uncond = jnp.zeros((x1.shape[0],), dtype=jnp.int32)
@@ -202,6 +188,12 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
 
         actor_loss = jnp.mean(vel_loss_positive + vel_loss_uncond * 0.1)
         
+        # Compute additional metrics
+        effective_batch_size = jnp.sum(loss_weight)**2 / (jnp.sum(loss_weight**2) + 1e-8)
+        sorted_weights = jnp.sort(loss_weight)
+        total_mass = jnp.sum(sorted_weights)
+        top_10_mass = sorted_weights[-int(0.1*len(sorted_weights)):].sum() / (total_mass + 1e-8)
+
         return actor_loss, {
             'actor_q': q.mean(),
             'actor_loss': actor_loss,
@@ -213,7 +205,12 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
             'o_std': o.std(),
             'o_min': o.min(),
             'o_max': o.max(),
-        } | additional_info
+            'o': o,
+            'effective_batch_size': effective_batch_size,
+            'loss_weights_top_10_mass': top_10_mass,
+            'loss_weights_max': jnp.max(loss_weight),
+            'loss_weights': loss_weight,
+        }
 
     @partial(jax.jit, static_argnames=['update_critic', 'update_actor'])
     def update(agent, batch, update_critic=True, update_actor=True, bc_agent=None):

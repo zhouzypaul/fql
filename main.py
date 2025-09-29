@@ -30,7 +30,7 @@ flags.DEFINE_boolean('debug', False, 'Whether to run in debug mode.')
 flags.DEFINE_string('wandb_run_group', 'Debug', 'Run group.')
 flags.DEFINE_string('wandb_project', 'fql', 'Wandb project name.')
 flags.DEFINE_boolean('wandb_offline', False, 'Whether to run wandb in offline mode.')
-flags.DEFINE_boolean('wandb_log_code', False, 'Whether to log code to wandb.')
+flags.DEFINE_boolean('wandb_log_code', True, 'Whether to log code to wandb.')
 flags.DEFINE_multi_string('wandb_tags', None, 'Wandb tags.')
 flags.DEFINE_integer('seed', 0, 'Random seed.')
 flags.DEFINE_string('env_name', 'cube-double-play-singletask-v0', 'Environment (dataset) name.')
@@ -38,20 +38,25 @@ flags.DEFINE_string('save_dir', 'exp/', 'Save directory.')
 flags.DEFINE_string('restore_path', None, 'Restore path.')
 flags.DEFINE_integer('restore_epoch', None, 'Restore epoch.')
 
-flags.DEFINE_integer('offline_steps', 1000000, 'Number of offline steps.')
-flags.DEFINE_integer('online_steps', 0, 'Number of online steps.')
 flags.DEFINE_integer('buffer_size', 2000000, 'Replay buffer size.')
+flags.DEFINE_integer('offline_steps', 1000000, 'Number of offline steps.')
 flags.DEFINE_integer('log_interval', 5000, 'Logging interval.')
 flags.DEFINE_integer('eval_interval', 100000, 'Evaluation interval.')
 flags.DEFINE_integer('save_interval', 1000000, 'Saving interval.')
-flags.DEFINE_integer('eval_batch_size', 10, 'Evaluation batch size.')
+flags.DEFINE_integer('online_steps', 0, 'Number of online steps.')
+flags.DEFINE_integer('online_eval_interval', 10000, 'Online evaluation interval.')
+flags.DEFINE_integer('online_save_interval', 100000, 'Online saving interval.')
+flags.DEFINE_integer('online_log_interval', 5000, 'Online logging interval.')
 
 flags.DEFINE_integer('eval_episodes', 50, 'Number of evaluation episodes.')
+flags.DEFINE_integer('eval_batch_size', 10, 'Evaluation batch size.')
 flags.DEFINE_integer('video_episodes', 0, 'Number of video episodes for each task.')
 flags.DEFINE_integer('video_frame_skip', 3, 'Frame skip for videos.')
 flags.DEFINE_integer('bc_eval_interval', 50000, 'BC evaluation interval.')
 flags.DEFINE_integer('bc_eval_episodes', 10, 'Number of episodes for BC evaluation.')
 flags.DEFINE_integer('bc_steps', 500000, 'Number of BC steps.')
+flags.DEFINE_string('restore_bc_path', None, 'Restore BC path.')
+flags.DEFINE_integer('restore_bc_epoch', None, 'Restore BC epoch.')
 
 flags.DEFINE_float('p_aug', None, 'Probability of applying image augmentation.')
 flags.DEFINE_integer('frame_stack', None, 'Number of frames to stack.')
@@ -116,14 +121,6 @@ def main(_):
     # Create agent.
     example_batch = train_dataset.sample(1)
 
-    agent_class = agents[config['agent_name']]
-    agent = agent_class.create(
-        FLAGS.seed,
-        example_batch['observations'],
-        example_batch['actions'],
-        config,
-    )
-
     # Create and train BC agent for sampled_adv_softmax
     bc_agent = None
     if config['agent_name'] == 'iql_diffusion' and config['optimal_var'] == 'sampled_adv_softmax':
@@ -135,27 +132,34 @@ def main(_):
             example_batch['actions'],
             bc_config,
         )
-        
-        # Train BC agent separately
-        bc_agent = train_bc_agent(bc_agent=bc_agent, 
-                                  train_dataset=train_dataset, 
-                                  val_dataset=val_dataset,
-                                  eval_env=eval_env, 
-                                  venv=venv,
-                                  eval_episodes=FLAGS.eval_episodes,
-                                  video_episodes=FLAGS.video_episodes,
-                                  video_frame_skip=FLAGS.video_frame_skip,
-                                  bc_steps=FLAGS.bc_steps, 
-                                  eval_interval=FLAGS.bc_eval_interval, 
-                                  wandb_project=FLAGS.wandb_project,
-                                  save_dir=FLAGS.save_dir,
-                                  run_name=f"BC_policy_{FLAGS.wandb_run_group}_{FLAGS.env_name}_seed{FLAGS.seed:02d}_{timestamp}",
-                                  debug=FLAGS.debug,
-                                  wandb_offline=FLAGS.wandb_offline,
-                                  wandb_log_code=FLAGS.wandb_log_code,
-                                  eval_batch_size=FLAGS.eval_batch_size,
-                                  )
-
+        if FLAGS.restore_bc_path is not None:
+            bc_agent = restore_agent(bc_agent, FLAGS.restore_bc_path, FLAGS.restore_bc_epoch)
+        else:
+            bc_agent = train_bc_agent(bc_agent=bc_agent, 
+                                    train_dataset=train_dataset, 
+                                    val_dataset=val_dataset,
+                                    eval_env=eval_env, 
+                                    venv=venv,
+                                    eval_episodes=FLAGS.eval_episodes,
+                                    video_episodes=FLAGS.video_episodes,
+                                    video_frame_skip=FLAGS.video_frame_skip,
+                                    bc_steps=FLAGS.bc_steps, 
+                                    eval_interval=FLAGS.bc_eval_interval, 
+                                    wandb_project=FLAGS.wandb_project,
+                                    save_dir=FLAGS.save_dir,
+                                    run_name=f"BC_policy_{FLAGS.wandb_run_group}_{FLAGS.env_name}_seed{FLAGS.seed:02d}_{timestamp}",
+                                    debug=FLAGS.debug,
+                                    wandb_offline=FLAGS.wandb_offline,
+                                    wandb_log_code=FLAGS.wandb_log_code,
+                                    eval_batch_size=FLAGS.eval_batch_size,
+                                    )
+    agent_class = agents[config['agent_name']]
+    agent = agent_class.create(
+        FLAGS.seed,
+        example_batch['observations'],
+        example_batch['actions'],
+        config,
+    )
     # Restore agent.
     if FLAGS.restore_path is not None:
         agent = restore_agent(agent, FLAGS.restore_path, FLAGS.restore_epoch)
@@ -264,7 +268,7 @@ def main(_):
                 agent, update_info = agent.update(batch)
 
         # Log metrics.
-        if i % FLAGS.log_interval == 0:
+        if (i <= FLAGS.offline_steps and i % FLAGS.log_interval == 0) or (i > FLAGS.offline_steps and i % FLAGS.online_log_interval == 0):
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
             if val_dataset is not None:
                 val_batch = val_dataset.sample(config['batch_size'])
@@ -283,7 +287,7 @@ def main(_):
             train_logger.log(train_metrics, step=i)
 
         # Evaluate agent.
-        if FLAGS.eval_interval != 0 and i % FLAGS.eval_interval == 0 and i >= config['actor_steps'][0]:
+        if (i <= FLAGS.offline_steps and FLAGS.eval_interval != 0 and i % FLAGS.eval_interval == 0 and i >= config['actor_steps'][0]) or (i > FLAGS.offline_steps and i % FLAGS.online_eval_interval == 0):
             renders = []
             eval_metrics = {}
             
@@ -320,9 +324,11 @@ def main(_):
                         
                         # Track max return across all combinations
                         max_return = max(max_return, eval_info['episode.return'])
-                            
+                                                    
                 # 1. Log overall best performance
                 eval_metrics['evaluation/episode.return'] = max_return
+                eval_metrics['evaluation/success_rate'] = max(cfg_optimality_results[cfg][o]['success'] for cfg in cfg_values for o in optimality_values)
+                eval_metrics['evaluation/episode_length'] = min(cfg_optimality_results[cfg][o]['episode.length'] for cfg in cfg_values for o in optimality_values)
                                 
                 # 2. Find and log the best cfg-optimality combination
                 best_cfg = None
@@ -340,13 +346,10 @@ def main(_):
                 eval_metrics['evaluation/best_optimality'] = best_o
                 
                 # 3. Log individual metrics for each cfg-optimality combination
-                # This allows wandb to aggregate (mean/std) across runs and create custom plots
                 for cfg in cfg_values:
                     for o in optimality_values:
                         result = cfg_optimality_results[cfg][o]
                         prefix = f"evaluation_cfg{cfg}/o_{o}"
-                        
-                        # Log each metric separately so wandb can aggregate them
                         eval_metrics[f'{prefix}/episode_return'] = result['episode.return']
                         eval_metrics[f'{prefix}/success_rate'] = result['success']
                         eval_metrics[f'{prefix}/episode_length'] = result['episode.length']
@@ -359,7 +362,6 @@ def main(_):
                 length_matrix = np.array([[cfg_optimality_results[cfg][o]['episode.length'] 
                                          for cfg in cfg_values] for o in optimality_values])
                 
-                # 5. Create interactive heatmaps (optional - mainly for individual run inspection)
                 def create_heatmap(data, title, colorscale='Viridis'):
                     return go.Figure(data=go.Heatmap(
                         z=data,
@@ -377,7 +379,6 @@ def main(_):
                         width=600, height=400, font=dict(size=12)
                     )
                 
-                # Log heatmaps for individual run inspection
                 eval_metrics['heatmaps/returns'] = wandb.Plotly(create_heatmap(returns_matrix, 'Episode Returns', 'Viridis'))
                 eval_metrics['heatmaps/success'] = wandb.Plotly(create_heatmap(success_matrix, 'Success Rate', 'Blues'))
                 eval_metrics['heatmaps/length'] = wandb.Plotly(create_heatmap(length_matrix, 'Episode Length', 'Oranges'))
@@ -405,7 +406,7 @@ def main(_):
             eval_logger.log(eval_metrics, step=i)
 
         # Save agent.
-        if i % FLAGS.save_interval == 0:
+        if (i <= FLAGS.offline_steps and i % FLAGS.save_interval == 0) or (i > FLAGS.offline_steps and i % FLAGS.online_save_interval == 0):
             save_agent(agent, FLAGS.save_dir, i)
 
     train_logger.close()
