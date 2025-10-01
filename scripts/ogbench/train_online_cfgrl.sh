@@ -24,61 +24,58 @@ rsync -a --delete \
 
 cd "$TMP"
 
-python main.py \
-  --agent agents/iql_diffusion.py \
-  --wandb_project cfgrl \
-  --seed 1 \
-  --env_name cube-single-play-singletask-v0 \
-  --restore_path /home/charles-xu/code/fql/exp/cfgrl/binary_o/binary_o_iql_diffusion_cube-single-play_seed01_0919_1805 \
-  --restore_epoch 1000000 \
-  --offline_steps 0 \
-  --online_steps 500000 \
-  --eval_interval 10000 \
-  --save_interval 100000 \
-  --eval_episodes 10 \
-  --eval_batch_size 10 \
-  --save_dir $REPO_ROOT/exp/ \
-  --wandb_log_code True \
-  --wandb_run_group sampled_adv_softmax_online \
-  --optimal_var sampled_adv_softmax \
-  $@ &
+for seed in 1 2 3; do
+  python main.py \
+    --seed $seed \
+    --env_name cube-single-play-singletask-v0 \
+    --offline_steps 1000000 \
+    --online_steps 500000 \
+    --save_dir $REPO_ROOT/exp/ \
+    --wandb_run_group sampled_adv_softmax_off_2_on \
+    --optimal_var sampled_adv_softmax \
+    $@ &
+done
 
-python main.py \
-  --agent agents/iql_diffusion.py \
-  --wandb_project cfgrl \
-  --seed 2 \
-  --env_name cube-single-play-singletask-v0 \
-  --restore_path /home/charles-xu/code/fql/exp/cfgrl/binary_o/binary_o_iql_diffusion_cube-single-play_seed02_0919_1821 \
-  --restore_epoch 1000000 \
-  --offline_steps 0 \
-  --online_steps 500000 \
-  --eval_interval 10000 \
-  --save_interval 100000 \
-  --eval_episodes 10 \
-  --eval_batch_size 10 \
-  --save_dir $REPO_ROOT/exp/ \
-  --wandb_log_code True \
-  --wandb_run_group sampled_adv_softmax_online \
-  --optimal_var sampled_adv_softmax \
-  $@ &
+wait
 
-python main.py \
-  --agent agents/iql_diffusion.py \
-  --wandb_project cfgrl \
-  --seed 3 \
-  --env_name cube-single-play-singletask-v0 \
-  --restore_path /home/charles-xu/code/fql/exp/cfgrl/binary_o/binary_o_iql_diffusion_cube-single-play_seed03_0919_1837 \
-  --restore_epoch 1000000 \
-  --offline_steps 0 \
-  --online_steps 500000 \
-  --eval_interval 10000 \
-  --save_interval 100000 \
-  --eval_episodes 10 \
-  --eval_batch_size 10 \
-  --save_dir $REPO_ROOT/exp/ \
-  --wandb_log_code True \
-  --wandb_run_group sampled_adv_softmax_online \
-  --optimal_var sampled_adv_softmax \
-  $@ &
+for seed in 1 2 3; do
+  python main.py \
+    --seed $seed \
+    --env_name scene-play-singletask-v0 \
+    --offline_steps 1000000 \
+    --online_steps 500000 \
+    --save_dir $REPO_ROOT/exp/ \
+    --wandb_run_group sampled_adv_softmax_off_2_on \
+    --optimal_var sampled_adv_softmax \
+    $@ &
+done
+
+wait
+
+for seed in 1 2 3; do
+  python main.py \
+    --seed $seed \
+    --env_name cube-single-play-singletask-v0 \
+    --offline_steps 1000000 \
+    --online_steps 500000 \
+    --save_dir $REPO_ROOT/exp/ \
+    --wandb_run_group binary_softmax_loss_off_2_on \
+    --optimal_var binary_softmax_loss \
+    $@ &
+done
+
+wait
+
+for seed in 1 2 3; do
+  python main.py \
+    --seed $seed \
+    --env_name scene-play-singletask-v0 \
+    --offline_steps 1000000 \
+    --online_steps 500000 \
+    --save_dir $REPO_ROOT/exp/ \
+    --wandb_run_group binary_softmax_loss_off_2_on \
+    --optimal_var binary_softmax_loss \
+    $@ &
+done
 
 wait

@@ -261,7 +261,7 @@ def get_config():
             discount=0.99,  # Discount factor.
             tau=0.005,  # Target network update rate.
             q_agg='mean',  # Aggregation method for target Q values.
-            alpha=10.0,  # BC coefficient (need to be tuned for each environment).
+            alpha=300.0,  # BC coefficient (need to be tuned for each environment).
             flow_steps=10,  # Number of flow steps.
             normalize_q_loss=False,  # Whether to normalize the Q loss.
             encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).

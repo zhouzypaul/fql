@@ -322,20 +322,18 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
             raise ValueError(f"Invalid optimal_var: {config['optimal_var']}")
         
         if config['opt_decay_schedule'] == "cosine":
+            assert config['total_steps'] is not None, "total_steps must be provided for cosine decay schedule"
+            assert config['critic_train_steps'] is not None, "critic_train_steps must be provided for cosine decay schedule"
             # Create a custom schedule that starts cosine decay when actor training begins
-            actor_start, actor_end = config['actor_steps']
-            actor_training_steps = actor_end - actor_start
+            actor_training_steps = config['total_steps'] - config['critic_train_steps']
             
             def delayed_cosine_schedule(step):
                 # No learning before actor starts training
-                if step < actor_start:
-                    return 0.0
-                # Apply cosine decay over the actor training period
-                elif step >= actor_end:
+                if step < config['critic_train_steps'] or step >= config['total_steps']:
                     return 0.0
                 else:
                     # Normalize step to [0, 1] over the actor training period
-                    normalized_step = (step - actor_start) / actor_training_steps
+                    normalized_step = (step - config['critic_train_steps']) / actor_training_steps
                     # Cosine decay from 1 to 0
                     return config['actor_lr'] * 0.5 * (1 + jnp.cos(jnp.pi * normalized_step))
             
@@ -387,11 +385,12 @@ def get_config():
             target_extraction=1,
             denoise_steps=16,
             action_distribution='data',
-            critic_steps=(0, 1_000000),
-            actor_steps=(0, 1_000_000),
+            critic_train_steps=None,
+            actor_start_steps=None,
+            total_steps=None, # Total number of training steps for cosine decay schedule
             optimal_var='binary_awr_loss', # 'binary', 'binary_awr_loss', 'binary_softmax_loss', 'softmax', or 'sampled_adv_softmax'
-            awr_temperature=0.3,
-            softmax_beta=1.0,
+            awr_temperature=0.1,
+            softmax_beta=3.0,
         )
     )
     return config

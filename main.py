@@ -28,7 +28,7 @@ FLAGS = flags.FLAGS
 
 flags.DEFINE_boolean('debug', False, 'Whether to run in debug mode.')
 flags.DEFINE_string('wandb_run_group', 'Debug', 'Run group.')
-flags.DEFINE_string('wandb_project', 'fql', 'Wandb project name.')
+flags.DEFINE_string('wandb_project', 'cfgrl', 'Wandb project name.')
 flags.DEFINE_boolean('wandb_offline', False, 'Whether to run wandb in offline mode.')
 flags.DEFINE_boolean('wandb_log_code', True, 'Whether to log code to wandb.')
 flags.DEFINE_multi_string('wandb_tags', None, 'Wandb tags.')
@@ -36,19 +36,19 @@ flags.DEFINE_integer('seed', 0, 'Random seed.')
 flags.DEFINE_string('env_name', 'cube-double-play-singletask-v0', 'Environment (dataset) name.')
 flags.DEFINE_string('save_dir', 'exp/', 'Save directory.')
 flags.DEFINE_string('restore_path', None, 'Restore path.')
-flags.DEFINE_integer('restore_epoch', None, 'Restore epoch.')
+flags.DEFINE_integer('restore_epoch', 0, 'Restore epoch.')
 
 flags.DEFINE_integer('buffer_size', 2000000, 'Replay buffer size.')
 flags.DEFINE_integer('offline_steps', 1000000, 'Number of offline steps.')
 flags.DEFINE_integer('log_interval', 5000, 'Logging interval.')
 flags.DEFINE_integer('eval_interval', 100000, 'Evaluation interval.')
-flags.DEFINE_integer('save_interval', 1000000, 'Saving interval.')
+flags.DEFINE_integer('save_interval', 500000, 'Saving interval.')
 flags.DEFINE_integer('online_steps', 0, 'Number of online steps.')
 flags.DEFINE_integer('online_eval_interval', 10000, 'Online evaluation interval.')
 flags.DEFINE_integer('online_save_interval', 100000, 'Online saving interval.')
 flags.DEFINE_integer('online_log_interval', 5000, 'Online logging interval.')
 
-flags.DEFINE_integer('eval_episodes', 50, 'Number of evaluation episodes.')
+flags.DEFINE_integer('eval_episodes', 10, 'Number of evaluation episodes.')
 flags.DEFINE_integer('eval_batch_size', 10, 'Evaluation batch size.')
 flags.DEFINE_integer('video_episodes', 0, 'Number of video episodes for each task.')
 flags.DEFINE_integer('video_frame_skip', 3, 'Frame skip for videos.')
@@ -64,8 +64,9 @@ flags.DEFINE_integer('balanced_sampling', 0, 'Whether to use balanced sampling f
 flags.DEFINE_string('optimal_var', 'binary', 'Optimal variable.')
 flags.DEFINE_float('awr_temperature', 1.0, 'AWR temperature.')
 flags.DEFINE_float('softmax_beta', 1.0, 'Softmax beta.')
+flags.DEFINE_integer('critic_pretrain_steps', None, 'Number of critic pretrain steps.')
 
-config_flags.DEFINE_config_file('agent', 'agents/fql.py', lock_config=False)
+config_flags.DEFINE_config_file('agent', 'agents/iql_diffusion.py', lock_config=False)
 
 
 def main(_):
@@ -75,12 +76,14 @@ def main(_):
     config['optimal_var'] = FLAGS.optimal_var
     config['awr_temperature'] = FLAGS.awr_temperature
     config['softmax_beta'] = FLAGS.softmax_beta
+    if FLAGS.critic_pretrain_steps is not None:
+        config['critic_train_steps'] = FLAGS.critic_pretrain_steps
+        config['actor_start_steps'] = FLAGS.critic_pretrain_steps
     # Create a more descriptive experiment name
     agent_name = config['agent_name']
     env_short = FLAGS.env_name.replace('-singletask', '').replace('-v0', '').replace('-v1', '').replace('-v2', '')
     timestamp = time.strftime("%m%d_%H%M")
     exp_name = f"{FLAGS.wandb_run_group}_{agent_name}_{env_short}_seed{FLAGS.seed:02d}_{timestamp}"
-    
 
     env, eval_env, train_dataset, val_dataset = make_env_and_datasets(FLAGS.env_name, frame_stack=FLAGS.frame_stack)
     if FLAGS.eval_batch_size > 1:
@@ -191,7 +194,8 @@ def main(_):
     done = True
     expl_metrics = dict()
     online_rng = jax.random.PRNGKey(FLAGS.seed)
-    for i in tqdm.tqdm(range(1, FLAGS.offline_steps + FLAGS.online_steps + 1), smoothing=0.1, dynamic_ncols=True):
+    for i in tqdm.tqdm(range(FLAGS.restore_epoch + 1, FLAGS.offline_steps + FLAGS.online_steps + 1), smoothing=0.1, dynamic_ncols=True):
+        actor_started = i >= config['actor_start_steps'] if config['actor_start_steps'] is not None else True
         if i <= FLAGS.offline_steps:
             # Offline RL.
             batch = train_dataset.sample(config['batch_size'])
@@ -205,8 +209,8 @@ def main(_):
             elif config['agent_name'] == 'iql_diffusion':
                 # Train main agent with BC agent for adv_beta computation
                 agent, update_info = agent.update(batch, 
-                                                update_critic=i in range(*config['critic_steps']), 
-                                                update_actor=i in range(*config['actor_steps']),
+                                                update_critic=i < config['critic_train_steps'] if config['critic_train_steps'] is not None else True, 
+                                                update_actor=actor_started,
                                                 bc_agent=bc_agent)
             else:
                 agent, update_info = agent.update(batch)
@@ -261,8 +265,8 @@ def main(_):
             elif config['agent_name'] == 'iql_diffusion':
                 # Train main agent with BC agent for adv_beta computation
                 agent, update_info = agent.update(batch, 
-                                                update_critic=i in range(*config['critic_steps']), 
-                                                update_actor=i in range(*config['actor_steps']),
+                                                update_critic=i < config['critic_train_steps'] if config['critic_train_steps'] is not None else True, 
+                                                update_actor=actor_started,
                                                 bc_agent=bc_agent)
             else:
                 agent, update_info = agent.update(batch)
@@ -287,7 +291,7 @@ def main(_):
             train_logger.log(train_metrics, step=i)
 
         # Evaluate agent.
-        if (i <= FLAGS.offline_steps and FLAGS.eval_interval != 0 and i % FLAGS.eval_interval == 0 and i >= config['actor_steps'][0]) or (i > FLAGS.offline_steps and i % FLAGS.online_eval_interval == 0):
+        if (i <= FLAGS.offline_steps and FLAGS.eval_interval != 0 and i % FLAGS.eval_interval == 0 and actor_started) or (i > FLAGS.offline_steps and i % FLAGS.online_eval_interval == 0):
             renders = []
             eval_metrics = {}
             
