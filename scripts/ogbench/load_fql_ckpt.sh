@@ -25,16 +25,14 @@ rsync -a --delete \
 cd "$TMP"
 
 
-python main.py \
-    --agent agents/fql.py \
-    --wandb_project cfgrl \
+python rollout.py \
+    --agent agents/iql_diffusion.py \
     --seed 1 \
     --env_name cube-single-play-singletask-v0 \
     --eval_episodes 10 \
     --eval_batch_size 10 \
-    --restore_path /home/charles-xu/code/fql/exp/fql/cube_play_single_fql_alpha_300 \
+    --video_episodes 10 \
+    --restore_path $REPO_ROOT/exp/cfgrl/sampled_adv_softmax_o_sequential/sampled_adv_softmax_o_sequential_iql_diffusion_cube-single-play_seed01_0929_1826 \
     --restore_epoch 1000000 \
-    --save_dir $REPO_ROOT/exp/ \
-    --offline_steps 1000000 \
-    --wandb_run_group debug \
+    --optimal_var sampled_adv_softmax \
     $@

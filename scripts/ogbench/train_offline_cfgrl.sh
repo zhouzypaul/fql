@@ -24,70 +24,40 @@ rsync -a --delete \
 
 cd "$TMP"
 
-# sampled_adv_softmax for scene
-for critic_steps in 100000 200000 300000 400000; do
-    for seed in 1 2 3; do
-      total_steps=$((500000 + $critic_steps))
-      (
-        python main.py \
-        --agent agents/iql_diffusion.py \
-        --wandb_project cfgrl \
-        --seed $seed \
-        --env_name scene-play-singletask-v0 \
-        --eval_episodes 10 \
-        --eval_batch_size 10 \
-        --save_dir $REPO_ROOT/exp/ \
-        --offline_steps $total_steps \
-        --wandb_run_group sampled_adv_softmax_o_sequential_$critic_steps \
-        --optimal_var sampled_adv_softmax \
-        --critic_pretrain_steps $critic_steps \
-        $@
-       ) || echo "Run failed"
-  done
-done
-
-# binary for scene
-for critic_steps in 100000 200000 300000 400000; do
-    for seed in 1 2 3; do
-      total_steps=$((500000 + $critic_steps))
-      (
-        python main.py \
-        --agent agents/iql_diffusion.py \
-        --wandb_project cfgrl \
-        --seed $seed \
-        --env_name scene-play-singletask-v0 \
-        --eval_episodes 10 \
-        --eval_batch_size 10 \
-        --save_dir $REPO_ROOT/exp/ \
-        --offline_steps $total_steps \
-        --wandb_run_group binary_o_sequential_$critic_steps \
-        --optimal_var binary \
-        --critic_pretrain_steps $critic_steps \
-        $@
-       ) || echo "Run failed"
-  done
-done
-
-# binary_softmax_loss for both envs
+# baseline for cube double
 for seed in 1 2 3; do
-  for critic_steps in 100000 200000 300000 400000; do
-      for env in scene-play-singletask-v0 cube-single-play-singletask-v0; do
-      total_steps=$((500000 + $critic_steps))
-        (
-          python main.py \
-          --agent agents/iql_diffusion.py \
-          --wandb_project cfgrl \
-          --seed $seed \
-          --env_name $env \
-          --eval_episodes 10 \
-          --eval_batch_size 10 \
-          --save_dir $REPO_ROOT/exp/ \
-          --offline_steps $total_steps \
-          --wandb_run_group binary_softmax_loss_sequential_$critic_steps \
-          --optimal_var binary_softmax_loss \
-          --critic_pretrain_steps $critic_steps \
-          $@
-        ) || echo "Run failed"
-    done
-  done
+  (
+    python main.py \
+    --agent agents/iql_diffusion.py \
+    --wandb_project cfgrl \
+    --seed $seed \
+    --env_name cube-double-play-singletask-v0 \
+    --eval_episodes 10 \
+    --eval_batch_size 10 \
+    --eval_interval 200000 \
+    --save_dir $REPO_ROOT/exp/ \
+    --offline_steps 1300000 \
+    --wandb_run_group binary_o_sequential_300000 \
+    --optimal_var binary \
+    --critic_pretrain_steps 300000 \
+    $@
+  ) || echo "Run failed"
+done
+
+for seed in 1 2 3; do
+  (
+    python main.py \
+    --agent agents/iql_diffusion.py \
+    --wandb_project cfgrl \
+    --seed $seed \
+    --env_name cube-double-play-singletask-v0 \
+    --eval_episodes 10 \
+    --eval_batch_size 10 \
+    --eval_interval 200000 \
+    --save_dir $REPO_ROOT/exp/ \
+    --offline_steps 1000000 \
+    --wandb_run_group binary_o \
+    --optimal_var binary \
+    $@
+  ) || echo "Run failed"
 done

@@ -149,7 +149,7 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
             behavior_qs = self.critic(batch_with_policy['observations_policy'], behavior_actions)
             behavior_q = jnp.min(behavior_qs, axis=0)  # Min over ensemble
             adv_beta = behavior_q - v
-            o = jnp.exp(adv) / (jnp.exp(adv) + jnp.exp(adv_beta) + 1e-8)
+            o = jnp.clip(jnp.exp(adv * self.config['softmax_beta']), 0, 1e8) / (jnp.clip(jnp.exp(adv * self.config['softmax_beta']), 0, 1e8) + jnp.clip(jnp.exp(adv_beta * self.config['softmax_beta']), 0, 1e8) + 1e-8)
             loss_weight = jnp.ones((actions.shape[0],), dtype=jnp.float32)
         
         elif self.config['optimal_var'] == 'binary':

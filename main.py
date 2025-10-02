@@ -413,6 +413,7 @@ def main(_):
         if (i <= FLAGS.offline_steps and i % FLAGS.save_interval == 0) or (i > FLAGS.offline_steps and i % FLAGS.online_save_interval == 0):
             save_agent(agent, FLAGS.save_dir, i)
 
+    save_agent(agent, FLAGS.save_dir, i)
     train_logger.close()
     eval_logger.close()
 

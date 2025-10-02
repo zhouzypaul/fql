@@ -105,7 +105,6 @@ def run_episodes(
     agent,
     env,
     task_id,
-    config,
     eval_temperature,
     eval_gaussian,
     cfg,
@@ -129,7 +128,6 @@ def run_episodes(
     observations, reset_infos = env.reset(options=dict(task_id=task_id, render_goal=should_render))
 
     num_envs = env.num_envs
-    policy_observations = copy.deepcopy(observations)
 
     # Per-env state
     active = np.ones(num_envs, dtype=bool)
@@ -147,9 +145,9 @@ def run_episodes(
 
     while not np.all(~active):
         if goal_conditioned:
-            actions = actor_fn(observations=policy_observations, temperature=eval_temperature, goals=goals)
+            actions = actor_fn(observations=observations, temperature=eval_temperature, goals=goals)
         else:
-            actions = actor_fn(observations=policy_observations, temperature=eval_temperature)
+            actions = actor_fn(observations=observations, temperature=eval_temperature)
         actions = np.array(actions)
         if actions.ndim == 0:
             actions = np.array([actions])
@@ -172,22 +170,24 @@ def run_episodes(
                 lengths[idx] += 1
                 returns[idx] += reward
 
-                if done_now[idx] and 'final_observation' in info:
-                    next_observation = info['final_observation']
+                if done_now[idx]:
+                    if 'final_observation' in info:
+                        next_observation = info['final_observation']
+                    if 'final_info' in info:
+                        info = copy.deepcopy(info['final_info'])
                 if 'goal' in info:
                     goals[idx] = info['goal']
                 if should_render and 'goal_rendered' in info:
                     goal_frames[idx] = info['goal_rendered']
-
                 transition = dict(
-                    observation=policy_observations[idx],
+                    observation=observations[idx],
                     next_observation=next_observation,
                     action=actions[idx],
                     reward=reward,
                     done=done_now[idx],
                     info=info,
                 )
-                add_to(trajectories[idx], transition)
+                add_to(trajectories[idx], copy.deepcopy(transition))
 
                 if should_render:
                     step_count = lengths[idx]
@@ -202,19 +202,12 @@ def run_episodes(
                 if done_now[idx]:
                     active[idx] = False
 
-            policy_observations[idx] = next_observation
-
-    # Build final infos per env by taking the last step info in the trajectory if present
-    final_infos = []
-    for idx in range(num_envs):
-        last_info = trajectories[idx]['info'][-1]
-        final_info = last_info.get('final_info', last_info)
-        final_infos.append(flatten(final_info) if isinstance(final_info, dict) else {})
+            observations[idx] = next_observation
 
     if should_render:
         renders = [np.array(r) for r in renders]
 
-    return trajectories, final_infos, renders, returns, lengths
+    return trajectories, renders, returns, lengths
 
 
 def rollout(
@@ -240,63 +233,37 @@ def rollout(
     stats = defaultdict(list)
     renders = []
 
-    if venv is not None:
-        batch_size = venv.num_envs
-        assert num_eval_episodes % batch_size == 0
-        total_batches = num_eval_episodes // batch_size
+    batch_size = venv.num_envs if venv is not None else 1
+    assert num_eval_episodes % batch_size == 0
+    total_batches = num_eval_episodes // batch_size
 
-        for _ in range(total_batches):
-            traj_batch, infos_batch, _, returns, lengths = run_episodes(
-                agent,
-                venv,
-                task_id,
-                config,
-                eval_temperature,
-                eval_gaussian,
-                cfg,
-                o,
-                goal_conditioned,
-                should_render=False,
-                video_frame_skip=video_frame_skip,
-            )
-            for idx in range(batch_size):
-                info_flat = {
-                    'episode.return': returns[idx],
-                    'episode.length': lengths[idx],
-                    **flatten(infos_batch[idx]),
-                }
-                add_to(stats, info_flat)
-            trajs.extend(traj_batch)
-    else:
-        for _ in range(num_eval_episodes):
-            traj_batch, infos_batch, _, returns, lengths = run_episodes(
-                agent,
-                env,
-                task_id,
-                config,
-                eval_temperature,
-                eval_gaussian,
-                cfg,
-                o,
-                goal_conditioned,
-                should_render=False,
-                video_frame_skip=video_frame_skip,
-            )
-            trajs.append(traj_batch[0])
-            info_flat = flatten(infos_batch[0]) if infos_batch[0] else {}
+    for _ in range(total_batches):
+        traj_batch, _, returns, lengths = run_episodes(
+            agent,
+            venv if venv is not None else env,
+            task_id,
+            eval_temperature,
+            eval_gaussian,
+            cfg,
+            o,
+            goal_conditioned,
+            should_render=False,
+            video_frame_skip=video_frame_skip,
+        )
+        for idx in range(batch_size):
             info_flat = {
-                'episode.return': returns[0],
-                'episode.length': lengths[0],
-                **info_flat,
+                'episode.return': returns[idx],
+                'episode.length': lengths[idx],
+                **flatten(traj_batch[idx]['info'][-1]),
             }
             add_to(stats, info_flat)
+        trajs.extend(traj_batch)
 
     for _ in range(num_video_episodes):
-        _, _, render_batch, _, _ = run_episodes(
+        _, render_batch, _, _ = run_episodes(
             agent,
             env,
             task_id,
-            config,
             eval_temperature,
             eval_gaussian,
             cfg,
