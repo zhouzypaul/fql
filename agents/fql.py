@@ -89,6 +89,8 @@ class FQLAgent(flax.struct.PyTreeNode):
             'q_loss': q_loss,
             'q': q.mean(),
             'mse': mse,
+            'actions': actions,
+            'data_actions': batch['actions'],
         }
 
     @jax.jit
