@@ -326,6 +326,14 @@ def main(_):
                         eval_name = f'evaluation_cfg{cfg}'
                         for k in ['episode.return', 'episode.length', 'success']:
                             eval_metrics[f'{eval_name}/{k}'] = cfg_optimality_results[cfg][1.0][w_prime_used][k]
+                        # Log action statistics for binary CFG mode
+                        result = cfg_optimality_results[cfg][1.0][w_prime_used]
+                        if 'min_action' in result:
+                            eval_metrics[f'{eval_name}/min_action'] = result['min_action']
+                        if 'max_action' in result:
+                            eval_metrics[f'{eval_name}/max_action'] = result['max_action']
+                        if 'average_action' in result:
+                            eval_metrics[f'{eval_name}/average_action'] = result['average_action']
 
                 # 1. Log overall best performance
                 eval_metrics['evaluation/episode.return'] = max_return
@@ -351,6 +359,16 @@ def main(_):
                 eval_metrics['evaluation/best_optimality'] = best_o
                 eval_metrics['evaluation/best_w_prime'] = best_w_prime
                 
+                # Log action statistics from the best performing configuration
+                if best_cfg is not None:
+                    best_result = cfg_optimality_results[best_cfg][best_o][best_w_prime]
+                    if 'min_action' in best_result:
+                        eval_metrics['evaluation/min_action'] = best_result['min_action']
+                    if 'max_action' in best_result:
+                        eval_metrics['evaluation/max_action'] = best_result['max_action']
+                    if 'average_action' in best_result:
+                        eval_metrics['evaluation/average_action'] = best_result['average_action']
+                
                 # 3. Log individual metrics for each cfg-optimality-w_prime combination
                 # This allows wandb to aggregate (mean/std) across runs and create custom plots
                 if FLAGS.advantage_gradient:
@@ -365,6 +383,13 @@ def main(_):
                                 eval_metrics[f'{prefix}/episode_return'] = result['episode.return']
                                 eval_metrics[f'{prefix}/success_rate'] = result['success']
                                 eval_metrics[f'{prefix}/episode_length'] = result['episode.length']
+                                # Log action statistics
+                                if 'min_action' in result:
+                                    eval_metrics[f'{prefix}/min_action'] = result['min_action']
+                                if 'max_action' in result:
+                                    eval_metrics[f'{prefix}/max_action'] = result['max_action']
+                                if 'average_action' in result:
+                                    eval_metrics[f'{prefix}/average_action'] = result['average_action']
                 elif config['optimal_var'] != 'binary':
                     # Standard CFG mode
                     for cfg in cfg_values:
@@ -376,6 +401,13 @@ def main(_):
                             eval_metrics[f'{prefix}/episode_return'] = result['episode.return']
                             eval_metrics[f'{prefix}/success_rate'] = result['success']
                             eval_metrics[f'{prefix}/episode_length'] = result['episode.length']
+                            # Log action statistics
+                            if 'min_action' in result:
+                                eval_metrics[f'{prefix}/min_action'] = result['min_action']
+                            if 'max_action' in result:
+                                eval_metrics[f'{prefix}/max_action'] = result['max_action']
+                            if 'average_action' in result:
+                                eval_metrics[f'{prefix}/average_action'] = result['average_action']
                 
                 # 4. Create heatmap data matrices for visualization
                 # For advantage gradient mode, create w_prime vs cfg heatmaps
