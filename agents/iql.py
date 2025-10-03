@@ -107,6 +107,8 @@ class IQLAgent(flax.struct.PyTreeNode):
                 'bc_log_prob': log_prob.mean(),
                 'mse': jnp.mean((dist.mode() - batch['actions']) ** 2),
                 'std': jnp.mean(dist.scale_diag),
+                'actions': q_actions,
+                'data_actions': batch['actions'],
             }
         else:
             raise ValueError(f'Unsupported actor loss: {self.config["actor_loss"]}')

@@ -208,6 +208,7 @@ class IQLDiffusionAgent(flax.struct.PyTreeNode):
             'o_std': o.std(),
             'o_min': o.min(),
             'o_max': o.max(),
+            'dataset_actions': batch['actions']
         }
 
     @partial(jax.jit, static_argnames=['update_critic', 'update_actor'])

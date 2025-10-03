@@ -28,16 +28,17 @@ ENV_NAME=${1:-cube-single-play-singletask-v0}
 shift || true  # Remove first argument, keep rest
 
 echo "Training advantage gradient agent on environment: $ENV_NAME"
-echo "Will sweep w_prime values: [0.1, 0.3, 0.5, 0.8, 1.0, 1.5, 2.0] during evaluation"
+echo "Will sweep w_prime values: [0.0, 0.1, 0.3, 0.5, 0.8, 1.0, 1.5, 2.0] during evaluation"
+echo "Will sweep w values: [0.0, 1.0, 1.5, 3.0, 5.0] during evaluation"
 
-for seed in 1 2 3; do
+for seed in 1 2 3 4 5 6; do
     echo "Starting seed $seed..."
     python main.py \
     --agent agents/iql_diffusion.py \
     --wandb_project advantage_gradient_tuning \
     --seed $seed \
     --env_name $ENV_NAME \
-    --eval_interval 200000 \
+    --eval_interval 500000 \
     --offline_steps 1000000 \
     --save_interval 1000000 \
     --eval_episodes 50 \
